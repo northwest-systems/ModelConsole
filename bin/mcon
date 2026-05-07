@@ -6,13 +6,13 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # MCON_IMAGE: mcon setup/build が作成する Docker image 名。
 image_name="${MCON_IMAGE:-mcon:local}"
 
-# MCON_CONTAINER: mcon start/stop/down が操作する Docker container 名。
+# MCON_CONTAINER: mcon start/stop/down が操作する Docker コンテナ名。
 container_name="${MCON_CONTAINER:-mcon}"
 
-# MCON_DATA_DIR: host 側の永続 data directory。container には /data として mount する。
+# MCON_DATA_DIR: ホスト側の永続データディレクトリ。コンテナには /data としてマウントする。
 export MCON_DATA_DIR="${MCON_DATA_DIR:-"$repo_root/data"}"
 
-# UV_CACHE_DIR: host 側で uv run する時の cache directory。
+# UV_CACHE_DIR: ホスト側で uv run する時のキャッシュディレクトリ。
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
 
 # PYTHONPATH: uv script entrypoint を使わず、micro package sources を直接 import するために設定する。
@@ -35,25 +35,25 @@ if [ -n "${PYTHONPATH:-}" ]; then
 fi
 export PYTHONPATH="$(IFS=:; printf "%s" "${python_paths[*]}")"
 
-# usage: mcon wrapper の利用方法を表示する。引数なし、戻り値は標準出力のみ。
+# usage: mcon ラッパーの利用方法を表示する。引数なし、戻り値は標準出力のみ。
 usage() {
   local lines=(
-    "mcon ホスト wrapper"
+    "mcon ホストラッパー"
     ""
     "使い方:"
-    "  mcon setup [--force]     host data を初期化し、mcon Docker image を no-cache で作成する"
-    "  mcon start               local image から mcon container を起動する"
+    "  mcon setup [--force]     ホストデータを初期化し、mcon Docker image を no-cache で作成する"
+    "  mcon start               ローカル image から mcon コンテナを起動する"
     "  mcon boot [backend]      server/system/backend 経由で mcon TUI を起動する"
     "  mcon build               mcon Docker image を no-cache で作り直す"
-    "  mcon stop                host mcon server と起動中の mcon container を停止する"
-    "  mcon down                mcon container を停止/削除し、host server も停止する"
-    "  mcon restart             local image から mcon container を作り直す"
-    "  mcon shell               mcon container 内の shell を開く"
-    "  mcon logs [args...]      container logs を表示する"
-    "  mcon ps                  mcon container の状態を表示する"
-    "  mcon host [args...]      uv 経由で host 側の mcon CLI を実行する"
-    "  mcon container [args...] container 内で mcon を実行する"
-    "  mcon <cli args...>       container 内で mcon CLI を実行する"
+    "  mcon stop                ホスト側 mcon server と起動中の mcon コンテナを停止する"
+    "  mcon down                mcon コンテナを停止/削除し、ホスト側 server も停止する"
+    "  mcon restart             ローカル image から mcon コンテナを作り直す"
+    "  mcon shell               mcon コンテナ内の shell を開く"
+    "  mcon logs [args...]      コンテナ log を表示する"
+    "  mcon ps                  mcon コンテナの状態を表示する"
+    "  mcon host [args...]      uv 経由でホスト側の mcon CLI を実行する"
+    "  mcon container [args...] コンテナ内で mcon を実行する"
+    "  mcon <cli args...>       コンテナ内で mcon CLI を実行する"
     ""
     "例:"
     "  mcon doctor"
@@ -70,13 +70,13 @@ usage() {
   printf "%s\n" "${lines[@]}"
 }
 
-# host_cli: host 側で mcon CLI を実行する。引数は mcon CLI へそのまま渡し、戻り値は uv/python の終了コード。
+# host_cli: ホスト側で mcon CLI を実行する。引数は mcon CLI へそのまま渡し、戻り値は uv/python の終了コード。
 host_cli() {
   cd "$repo_root"
   uv run --no-project python -m mcon.cli "$@"
 }
 
-# run_host_cli: host 側 mcon CLI へ exec で置き換える。引数は mcon CLI へそのまま渡し、戻り値は exec 先の終了コード。
+# run_host_cli: ホスト側 mcon CLI へ exec で置き換える。引数は mcon CLI へそのまま渡し、戻り値は exec 先の終了コード。
 run_host_cli() {
   cd "$repo_root"
   exec uv run --no-project python -m mcon.cli "$@"
@@ -127,7 +127,7 @@ container_running() {
   [ "$(docker container inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)" = "true" ]
 }
 
-# remove_container_if_exists: 既存 container を削除する。引数なし、戻り値は docker rm の終了コード。
+# remove_container_if_exists: 既存コンテナを削除する。引数なし、戻り値は docker rm の終了コード。
 remove_container_if_exists() {
   if container_exists; then
     docker rm -f "$container_name" >/dev/null
@@ -135,7 +135,7 @@ remove_container_if_exists() {
   fi
 }
 
-# docker_exec: 起動中 container 内でコマンドを実行する。引数は docker exec へ渡し、戻り値は実行コマンドの終了コード。
+# docker_exec: 起動中コンテナ内でコマンドを実行する。引数は docker exec へ渡し、戻り値は実行コマンドの終了コード。
 docker_exec() {
   if ! container_running; then
     echo "mcon container is not running. Run: mcon start" >&2
@@ -147,12 +147,12 @@ docker_exec() {
   exec docker exec "$container_name" "$@"
 }
 
-# backend_list: Python 側 registry から boot target 一覧を取得する。引数なし、戻り値は標準出力の backend 名一覧。
+# backend_list: Python 側 registry から boot 対象一覧を取得する。引数なし、戻り値は標準出力の backend 名一覧。
 backend_list() {
   host_cli backend list --plain
 }
 
-# backend_auth_label: Python 側 registry から boot target の認証状態ラベルを取得する。第1引数は backend 名。
+# backend_auth_label: Python 側 registry から boot 対象の認証状態ラベルを取得する。第1引数は backend 名。
 backend_auth_label() {
   host_cli backend auth-label "$1"
 }
@@ -172,18 +172,18 @@ backend_model_candidates() {
   host_cli backend model-candidates "$1"
 }
 
-# print_boot_choices: boot target の選択肢を stderr に表示する。引数なし、戻り値は表示処理の終了コード。
+# print_boot_choices: boot 対象の選択肢を stderr に表示する。引数なし、戻り値は表示処理の終了コード。
 print_boot_choices() {
   local index=1
   local candidate
-  echo "Select mcon boot target:" >&2
+  echo "mcon boot 対象を選択してください:" >&2
   for candidate in $(backend_list); do
     printf "  %d) %-10s backend     %s\n" "$index" "$candidate" "$(backend_auth_label "$candidate")" >&2
     index=$((index + 1))
   done
 }
 
-# select_boot_target: 対話的に boot target を選択する。引数なし、戻り値は標準出力の target 名。
+# select_boot_target: 対話的に boot 対象を選択する。引数なし、戻り値は標準出力の対象名。
 select_boot_target() {
   host_cli init >/dev/null 2>&1
   local options=()
@@ -194,7 +194,7 @@ select_boot_target() {
 
   print_boot_choices
   if ! [ -t 0 ]; then
-    echo "run mcon boot <target>, for example: mcon boot codex" >&2
+    echo "mcon boot <対象> を指定してください。例: mcon boot codex" >&2
     return 2
   fi
 
@@ -214,11 +214,11 @@ select_boot_target() {
       return 0
     fi
   done
-  echo "unknown boot target: $choice" >&2
+  echo "未知の boot 対象です: $choice" >&2
   return 2
 }
 
-# select_boot_model: 対話的に model を選択する。第1引数は target 名、戻り値は標準出力の model id。
+# select_boot_model: 対話的に model を選択する。第1引数は対象名、戻り値は標準出力の model id。
 select_boot_model() {
   local target="$1"
   local default_model
@@ -234,17 +234,17 @@ select_boot_model() {
   done < <(backend_model_candidates "$target")
 
   if [ "${#options[@]}" -gt 0 ]; then
-    echo "Select model for $target:" >&2
+    echo "$target の model を選択してください:" >&2
     local index=1
     for candidate in "${options[@]}"; do
       if [ "$candidate" = "$default_model" ]; then
-        printf "  %d) %s [default]\n" "$index" "$candidate" >&2
+        printf "  %d) %s [標準]\n" "$index" "$candidate" >&2
       else
         printf "  %d) %s\n" "$index" "$candidate" >&2
       fi
       index=$((index + 1))
     done
-    printf "  custom) type a model id\n" >&2
+    printf "  custom) model id を入力する\n" >&2
   fi
 
   printf "model [%s]> " "${default_model:-default}" >&2
@@ -259,12 +259,12 @@ select_boot_model() {
   fi
 }
 
-# run_container_cli: container 内 mcon CLI を実行する。引数は mcon CLI へ渡し、戻り値は docker exec/mcon の終了コード。
+# run_container_cli: コンテナ内 mcon CLI を実行する。引数は mcon CLI へ渡し、戻り値は docker exec/mcon の終了コード。
 run_container_cli() {
   docker_exec mcon "$@"
 }
 
-# run_container: mcon server container を作成して detached 起動する。引数なし、戻り値は docker run の終了コード。
+# run_container: mcon server コンテナを作成して detached 起動する。引数なし、戻り値は docker run の終了コード。
 run_container() {
   cd "$repo_root"
   mkdir -p "$MCON_DATA_DIR" "$MCON_DATA_DIR/home" "$MCON_DATA_DIR/audit" "$MCON_DATA_DIR/vault"
@@ -289,7 +289,7 @@ run_container() {
   docker run "${docker_args[@]}"
 }
 
-# boot_container: 既存 container を再利用しつつ server container を起動する。引数は未使用、戻り値は起動処理の終了コード。
+# boot_container: 既存コンテナを再利用しつつ server コンテナを起動する。引数は未使用、戻り値は起動処理の終了コード。
 boot_container() {
   host_cli init >/dev/null 2>&1
   if container_running; then
@@ -372,7 +372,7 @@ case "${1:-}" in
 使い方:
   mcon boot [backend] [--model MODEL] [--session SESSION_ID] [--title TITLE] [--server URL]
 
-Backend:
+バックエンド:
   $(backend_list)
 
 例:
@@ -451,7 +451,7 @@ EOF
     fi
     raw_backend="$backend"
     if ! backend="$(backend_normalize "$raw_backend")"; then
-      echo "unknown backend: $raw_backend" >&2
+      echo "未知の backend です: $raw_backend" >&2
       echo "known backends: $(backend_list)" >&2
       exit 2
     fi

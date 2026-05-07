@@ -1,4 +1,4 @@
-"""mcon command line interface."""
+# 説明: mcon コマンドライン処理。
 
 from __future__ import annotations
 
@@ -42,42 +42,35 @@ from server import build_status, run_server
 LOGIN_TARGETS = ("claude", "codex", "copilot", "nvidia")
 
 
+# 説明: コマンドライン引数を解釈し、選択されたサブコマンドへ処理を振り分ける。
+# 引数: argv は program 名を含まないコマンドライン引数。None の場合は sys.argv から読む。
+# 返り値: 選択された command の process exit code。
 def main(argv: list[str] | None = None) -> int:
-    """Parse command line arguments and dispatch to the selected subcommand.
-
-    Args:
-        argv: Command line arguments without the program name. ``None`` reads
-            from ``sys.argv``.
-
-    Returns:
-        Process exit code for the selected command.
-    """
-
     parser = argparse.ArgumentParser(prog="mcon")
-    parser.add_argument("--data-dir", type=Path, default=None, help="data directory (default: $MCON_DATA_DIR or /data)")
+    parser.add_argument("--data-dir", type=Path, default=None, help="データディレクトリ (標準: $MCON_DATA_DIR または /data)")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("init", help="initialize mcon data files")
-    subparsers.add_parser("serve", help="run the mcon server API")
-    subparsers.add_parser("stop", help="stop the host mcon server API")
-    subparsers.add_parser("status", help="show runtime status")
-    subparsers.add_parser("doctor", help="run diagnostics")
-    tui_parser = subparsers.add_parser("tui", help="run the mcon terminal frontend through the server API")
-    tui_parser.add_argument("--server", default=None, help="mcon server URL (default: runtime.json or persistent host server)")
-    tui_parser.add_argument("--session", default=None, help="existing session id to open")
-    tui_parser.add_argument("--backend", default=None, help="backend for a new session")
-    tui_parser.add_argument("--model", default=None, help="model for a new session")
-    tui_parser.add_argument("--title", default=None, help="title for a new session")
-    code_parser = subparsers.add_parser("code", help="open a known mcon file in $EDITOR")
+    subparsers.add_parser("init", help="mcon data file を初期化する")
+    subparsers.add_parser("serve", help="mcon server API を起動する")
+    subparsers.add_parser("stop", help="ホスト側の mcon server API を停止する")
+    subparsers.add_parser("status", help="実行時状態を表示する")
+    subparsers.add_parser("doctor", help="診断を実行する")
+    tui_parser = subparsers.add_parser("tui", help="server API 経由で mcon ターミナル frontend を起動する")
+    tui_parser.add_argument("--server", default=None, help="mcon server URL (標準: runtime.json または常駐ホスト server)")
+    tui_parser.add_argument("--session", default=None, help="開く既存 session id")
+    tui_parser.add_argument("--backend", default=None, help="新規 session 用バックエンド")
+    tui_parser.add_argument("--model", default=None, help="新規 session 用 model")
+    tui_parser.add_argument("--title", default=None, help="新規 session 用 title")
+    code_parser = subparsers.add_parser("code", help="既知の mcon file を $EDITOR で開く")
     code_parser.add_argument("key_or_path")
 
-    login_parser = subparsers.add_parser("login", help="prepare provider credentials")
+    login_parser = subparsers.add_parser("login", help="provider 認証情報を準備する")
     login_parser.add_argument("target", choices=LOGIN_TARGETS)
     login_parser.add_argument("--method", choices=["api-key", "oauth"], required=True)
-    login_parser.add_argument("--api-key-env", default=None, help="read API key from this environment variable")
-    login_parser.add_argument("--device-auth", action="store_true", help="use device auth where supported (default for codex OAuth)")
-    login_parser.add_argument("--setup-token", action="store_true", help="use Claude setup-token OAuth flow")
-    login_parser.add_argument("--print-command", action="store_true", help="print OAuth command instead of running it")
+    login_parser.add_argument("--api-key-env", default=None, help="この環境変数から API key を読む")
+    login_parser.add_argument("--device-auth", action="store_true", help="対応 provider では device auth を使う")
+    login_parser.add_argument("--setup-token", action="store_true", help="Claude setup-token OAuth flow を使う")
+    login_parser.add_argument("--print-command", action="store_true", help="OAuth command を実行せず表示だけ行う")
 
     backend_parser = subparsers.add_parser("backend", help=argparse.SUPPRESS)
     backend_subparsers = backend_parser.add_subparsers(dest="backend_command", required=True)
@@ -94,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     backend_subparsers.add_parser("container-env")
 
     subparsers.add_parser("list", help=argparse.SUPPRESS).add_argument("topic", choices=["paths"])
-    subparsers.add_parser("list-paths", help="list known mcon paths")
+    subparsers.add_parser("list-paths", help="既知の mcon path を一覧する")
 
     args = parser.parse_args(argv)
     data_directory = args.data_dir.resolve() if args.data_dir else get_data_directory()
@@ -123,16 +116,10 @@ def main(argv: list[str] | None = None) -> int:
     return EXIT_FAIL
 
 
+# 説明: データディレクトリを初期化し、作成済みまたは既知の file path を表示する。
+# 引数: data_directory は config、runtime、vault、audit の root directory。
+# 返り値: 初期化完了後の EXIT_OK。
 def _cmd_init(data_directory: Path) -> int:
-    """Initialize the data directory and print created/known file paths.
-
-    Args:
-        data_directory: Root directory for config, runtime, vault, and audit.
-
-    Returns:
-        ``EXIT_OK`` after initialization completes.
-    """
-
     paths = initialize_data_directory(data_directory)
     print(f"initialized: {data_directory}", file=sys.stderr)
     for path in paths:
@@ -140,16 +127,10 @@ def _cmd_init(data_directory: Path) -> int:
     return EXIT_OK
 
 
+# 説明: HTTP server を前面で起動する。
+# 引数: data_directory は runtime 設定の読み込みに使う root directory。
+# 返り値: clean に中断された場合は EXIT_OK。
 def _cmd_serve(data_directory: Path) -> int:
-    """Start the HTTP server in the foreground.
-
-    Args:
-        data_directory: Root directory used to load runtime configuration.
-
-    Returns:
-        ``EXIT_OK`` when interrupted cleanly.
-    """
-
     initialize_data_directory(data_directory)
     runtime_config = load_config(data_directory)
     server = run_server(runtime_config)
@@ -162,17 +143,10 @@ def _cmd_serve(data_directory: Path) -> int:
         return EXIT_OK
 
 
+# 説明: runtime.json に記録された常駐ホスト server を停止する。
+# 引数: data_directory は runtime state の読み込みに使う root directory。
+# 返り値: server が動いていない、または停止に成功した場合は EXIT_OK。停止できなかった場合は EXIT_FAIL。
 def _cmd_stop(data_directory: Path) -> int:
-    """Stop the persistent host server recorded in runtime.json.
-
-    Args:
-        data_directory: Root directory used to load runtime state.
-
-    Returns:
-        ``EXIT_OK`` when no server is running or shutdown succeeds, otherwise
-        ``EXIT_FAIL``.
-    """
-
     runtime_config = load_config(data_directory)
     runtime_data = read_runtime(runtime_config.runtime_path)
     server_pid = runtime_data.get("server_pid")
@@ -202,16 +176,10 @@ def _cmd_stop(data_directory: Path) -> int:
     return EXIT_FAIL
 
 
+# 説明: 実行時 service の状態を JSON で表示する。
+# 引数: data_directory は runtime 設定の読み込みに使う root directory。
+# 返り値: service check が 1 つでも失敗した場合は EXIT_FAIL。それ以外は EXIT_OK。
 def _cmd_status(data_directory: Path) -> int:
-    """Print JSON status for runtime services.
-
-    Args:
-        data_directory: Root directory used to load runtime configuration.
-
-    Returns:
-        ``EXIT_FAIL`` when any service check fails, otherwise ``EXIT_OK``.
-    """
-
     runtime_config = load_config(data_directory)
     status = build_status(runtime_config)
     print(json.dumps(status, ensure_ascii=False, indent=2, sort_keys=True))
@@ -223,16 +191,10 @@ def _cmd_status(data_directory: Path) -> int:
     return EXIT_FAIL if failed_services else EXIT_OK
 
 
+# 説明: 人間が読める形式の診断を実行する。
+# 引数: data_directory は runtime 設定の読み込みに使う root directory。
+# 返り値: 診断結果のうち最も重い exit code。ok、warn、fail のいずれか。
 def _cmd_doctor(data_directory: Path) -> int:
-    """Run human-readable diagnostics.
-
-    Args:
-        data_directory: Root directory used to load runtime configuration.
-
-    Returns:
-        Highest diagnostic exit code: ok, warn, or fail.
-    """
-
     runtime_config = load_config(data_directory)
     checks = run_doctor(runtime_config)
     highest_exit_code = EXIT_OK
@@ -245,17 +207,10 @@ def _cmd_doctor(data_directory: Path) -> int:
     return highest_exit_code
 
 
+# 説明: server API 経由でターミナル frontend を起動する。
+# 引数: data_directory は runtime 設定の読み込みに使う root directory。args は TUI option 用に parse 済みの argparse namespace。
+# 返り値: TUI process の exit code。
 def _cmd_tui(data_directory: Path, args: argparse.Namespace) -> int:
-    """Launch the terminal frontend through the server API.
-
-    Args:
-        data_directory: Root directory used to load runtime configuration.
-        args: Parsed argparse namespace for TUI options.
-
-    Returns:
-        TUI process exit code.
-    """
-
     from tui import run_tui
 
     initialize_data_directory(data_directory)
@@ -270,17 +225,10 @@ def _cmd_tui(data_directory: Path, args: argparse.Namespace) -> int:
     )
 
 
+# 説明: 既知の mcon file または任意 path を設定済み editor で開く。
+# 引数: data_directory は runtime 設定の読み込みに使う root directory。key_or_path は既知 path key または literal path。
+# 返り値: editor command の終了後に EXIT_OK。
 def _cmd_code(data_directory: Path, key_or_path: str) -> int:
-    """Open a known mcon file or arbitrary path in the configured editor.
-
-    Args:
-        data_directory: Root directory used to load runtime configuration.
-        key_or_path: Known path key or literal path passed by the user.
-
-    Returns:
-        ``EXIT_OK`` after the editor command returns.
-    """
-
     runtime_config = load_config(data_directory)
     paths = _known_paths(runtime_config)
     target_path = paths.get(key_or_path, Path(key_or_path))
@@ -289,17 +237,10 @@ def _cmd_code(data_directory: Path, key_or_path: str) -> int:
     return EXIT_OK
 
 
+# 説明: API key を保存するか、provider OAuth helper を呼び出す。
+# 引数: data_directory は runtime 設定の読み込みに使う root directory。args は login option 用に parse 済みの argparse namespace。
+# 返り値: 対応済み login path では EXIT_OK。それ以外は EXIT_FAIL。
 def _cmd_login(data_directory: Path, args: argparse.Namespace) -> int:
-    """Store API keys or invoke provider OAuth helpers.
-
-    Args:
-        data_directory: Root directory used to load runtime configuration.
-        args: Parsed argparse namespace for login options.
-
-    Returns:
-        ``EXIT_OK`` on a supported login path, otherwise ``EXIT_FAIL``.
-    """
-
     initialize_data_directory(data_directory)
     runtime_config = load_config(data_directory)
     if args.method == "api-key":
@@ -322,7 +263,7 @@ def _cmd_login(data_directory: Path, args: argparse.Namespace) -> int:
     elif args.target == "copilot":
         result = login_copilot_with_oauth(run_command=not args.print_command)
     else:
-        print("oauth: target=nvidia unsupported; use mcon login nvidia --method api-key", file=sys.stderr)
+        print("oauth: target=nvidia は未対応です。mcon login nvidia --method api-key を使ってください", file=sys.stderr)
         return EXIT_FAIL
     if result.command is not None:
         print("command: " + " ".join(result.command))
@@ -330,17 +271,10 @@ def _cmd_login(data_directory: Path, args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# 説明: 薄い shell ラッパー向けに backend registry 情報を出力する。
+# 引数: data_directory は credential 状態の確認に使う data directory。args は backend subcommand の argparse namespace。
+# 返り値: 成功時は EXIT_OK、失敗時は EXIT_FAIL。
 def _cmd_backend(data_directory: Path, args: argparse.Namespace) -> int:
-    """薄い shell wrapper 向けに backend registry 情報を出力する。
-
-    Args:
-        data_directory: credential 状態の確認に使う data directory。
-        args: backend subcommand の argparse namespace。
-
-    Returns:
-        成功時は ``EXIT_OK``、失敗時は ``EXIT_FAIL``。
-    """
-
     try:
         if args.backend_command == "list":
             backend_names = [backend_spec.name for backend_spec in get_backend_specs()]
@@ -366,21 +300,14 @@ def _cmd_backend(data_directory: Path, args: argparse.Namespace) -> int:
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return EXIT_FAIL
-    print(f"unknown backend command: {args.backend_command}", file=sys.stderr)
+    print(f"未知の backend command です: {args.backend_command}", file=sys.stderr)
     return EXIT_FAIL
 
 
+# 説明: 環境変数または secure prompt から API key を読む。
+# 引数: target は標準環境変数を選ぶための provider 名。api_key_env は明示的に指定された任意の環境変数名。
+# 返り値: 環境変数または prompt から受け取った API key 文字列。
 def _read_api_key(target: str, api_key_env: str | None) -> str:
-    """Read an API key from an environment variable or secure prompt.
-
-    Args:
-        target: Provider name used to choose the default environment variable.
-        api_key_env: Optional explicit environment variable name.
-
-    Returns:
-        API key text supplied by environment or prompt.
-    """
-
     environment_name = api_key_env
     if environment_name is None:
         if target == "claude":
@@ -397,32 +324,20 @@ def _read_api_key(target: str, api_key_env: str | None) -> str:
     return getpass.getpass(f"{environment_name}: ")
 
 
+# 説明: 既知の path alias と解決後 path を表示する。
+# 引数: data_directory は runtime 設定の読み込みに使う root directory。
+# 返り値: path 一覧の表示後に EXIT_OK。
 def _cmd_list_paths(data_directory: Path) -> int:
-    """Print known path aliases and their resolved paths.
-
-    Args:
-        data_directory: Root directory used to load runtime configuration.
-
-    Returns:
-        ``EXIT_OK`` after printing the path list.
-    """
-
     runtime_config = load_config(data_directory)
     for key, path in sorted(_known_paths(runtime_config).items()):
         print(f"{key}\t{path}")
     return EXIT_OK
 
 
+# 説明: 編集または確認可能な runtime path の map を組み立てる。
+# 引数: runtime_config は data_directory を持つ runtime 設定 object。
+# 返り値: 短い path key から具体的な filesystem path への mapping。
 def _known_paths(runtime_config: object) -> dict[str, Path]:
-    """Build the map of editable/inspectable runtime paths.
-
-    Args:
-        runtime_config: Runtime configuration object with a ``data_directory``.
-
-    Returns:
-        Mapping from short path keys to concrete filesystem paths.
-    """
-
     data_directory = runtime_config.data_directory
     return {
         "config": data_directory / "config.toml",
@@ -436,16 +351,10 @@ def _known_paths(runtime_config: object) -> dict[str, Path]:
     }
 
 
+# 説明: process id が存在するか確認する。
+# 引数: pid は確認対象の process id。
+# 返り値: process が存在する場合は True。それ以外は False。
 def _pid_is_running(pid: int) -> bool:
-    """Check whether a process id exists.
-
-    Args:
-        pid: Process id to check.
-
-    Returns:
-        ``True`` when the process exists, otherwise ``False``.
-    """
-
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
