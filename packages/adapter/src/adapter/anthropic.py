@@ -282,3 +282,11 @@ class AnthropicAdapter:
         if beta_header:
             upstream_request.add_header("anthropic-beta", beta_header)
         return upstream_request
+
+
+ADAPTER_SPEC = {
+    "name": "anthropic",
+    "aliases": (),
+    "adapter_class": AnthropicAdapter,
+    "model_override": None,
+}

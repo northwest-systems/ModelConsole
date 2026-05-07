@@ -838,3 +838,11 @@ def _map_model_to_codex(model: Any, default_model: str = DEFAULT_CODEX_MODEL) ->
     if model_name.startswith("gpt-") or model_name.startswith("o"):
         return model_name
     return default_model
+
+
+ADAPTER_SPEC = {
+    "name": "codex",
+    "aliases": (),
+    "adapter_class": CodexAdapter,
+    "model_override": "codex_model",
+}

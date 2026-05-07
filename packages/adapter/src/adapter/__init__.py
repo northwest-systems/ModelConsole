@@ -1,81 +1,88 @@
-"""Backend adapters used by the mcon system runtime."""
+# 説明: mcon 実行基盤が使うバックエンドアダプターの自動登録 factory。
 
-from .anthropic import AnthropicAdapter, AdapterError, RawAdapterResponse
-from .claude_code import ClaudeCodeAdapter
-from .codex import CodexAdapter
-from .copilot import CopilotAdapter
-from .nvidia import NvidiaNimAdapter
+from __future__ import annotations
 
-# Anthropic-compatible direct API backend.
-BACKEND_ANTHROPIC = "anthropic"
+import importlib
+import pkgutil
+from dataclasses import dataclass
+from typing import Any
 
-# Claude Code CLI backend.
-BACKEND_CLAUDE_CODE = "claude-code"
-
-# Codex CLI backend.
-BACKEND_CODEX = "codex"
-
-# GitHub Copilot CLI backend.
-BACKEND_COPILOT = "copilot"
-
-# NVIDIA NIM Chat Completions backend.
-BACKEND_NVIDIA = "nvidia"
+from .anthropic import AdapterError, RawAdapterResponse
 
 
+@dataclass(frozen=True)
+# 説明: アダプターモジュールが公開するバックエンド登録情報。
+# 引数: name は正規バックエンド名、aliases は別名、adapter_class は生成する class、model_override はバックエンド固有モデル引数名。
+# 返り値: AdapterSpec instance。
+class AdapterSpec:
+    name: str
+    aliases: tuple[str, ...]
+    adapter_class: type[Any]
+    model_override: str | None = None
+
+
+# 説明: アダプターパッケージ内のモジュールから ADAPTER_SPEC を収集する。
+# 引数: なし。
+# 返り値: バックエンド名と別名から AdapterSpec への対応表。
+def _load_adapter_specs() -> dict[str, AdapterSpec]:
+    adapter_specs: dict[str, AdapterSpec] = {}
+    for module_info in pkgutil.iter_modules(__path__):
+        if module_info.name.startswith("_"):
+            continue
+        module = importlib.import_module(f"{__name__}.{module_info.name}")
+        raw_spec = getattr(module, "ADAPTER_SPEC", None)
+        if raw_spec is None:
+            continue
+        adapter_spec = AdapterSpec(
+            name=str(raw_spec["name"]),
+            aliases=tuple(str(alias) for alias in raw_spec.get("aliases", ())),
+            adapter_class=raw_spec["adapter_class"],
+            model_override=raw_spec.get("model_override"),
+        )
+        adapter_specs[adapter_spec.name] = adapter_spec
+        for alias in adapter_spec.aliases:
+            adapter_specs[alias] = adapter_spec
+        globals()[adapter_spec.adapter_class.__name__] = adapter_spec.adapter_class
+    return adapter_specs
+
+
+ADAPTER_SPECS = _load_adapter_specs()
+
+
+# 説明: 選択されたバックエンドのアダプター instance を作成する。
+# 引数: backend はバックエンド名または別名。credentials は vault 由来の認証情報。model は共通モデル上書き。model_overrides はバックエンド固有モデル上書き。
+# 返り値: バックエンド request method を実装するアダプター instance。未対応バックエンドなら AdapterError を送出する。
 def build_adapter(
-    backend: str = BACKEND_ANTHROPIC,
+    backend: str = "anthropic",
     *,
     credentials: dict[str, str] | None = None,
     model: str | None = None,
-    claude_code_model: str | None = None,
-    codex_model: str | None = None,
-    copilot_model: str | None = None,
-    nvidia_model: str | None = None,
-) -> AnthropicAdapter | ClaudeCodeAdapter | CodexAdapter | CopilotAdapter | NvidiaNimAdapter:
-    """Create a backend adapter for the selected provider.
-
-    Args:
-        backend: Backend identifier from the supported backend constants.
-        credentials: Optional credential values loaded from the vault.
-        model: Generic model override for the selected backend.
-        claude_code_model: Claude Code-specific model override.
-        codex_model: Codex-specific model override.
-        copilot_model: Copilot-specific model override.
-        nvidia_model: NVIDIA-specific model override.
-
-    Returns:
-        Adapter instance implementing the backend request methods.
-
-    Raises:
-        AdapterError: When the backend name is unsupported.
-    """
-
+    **model_overrides: str | None,
+) -> Any:
     normalized_backend = backend.strip().lower()
-    if normalized_backend == BACKEND_ANTHROPIC:
-        return AnthropicAdapter(credentials=credentials)
-    if normalized_backend in (BACKEND_CLAUDE_CODE, "claude"):
-        return ClaudeCodeAdapter(credentials=credentials, default_model=model or claude_code_model)
-    if normalized_backend == BACKEND_CODEX:
-        return CodexAdapter(credentials=credentials, default_model=model or codex_model)
-    if normalized_backend == BACKEND_COPILOT:
-        return CopilotAdapter(credentials=credentials, default_model=model or copilot_model)
-    if normalized_backend in (BACKEND_NVIDIA, "nim", "nvidia-nim"):
-        return NvidiaNimAdapter(credentials=credentials, default_model=model or nvidia_model)
-    raise AdapterError(503, "configuration_error", f"Unsupported backend: {backend}")
+    adapter_spec = ADAPTER_SPECS.get(normalized_backend)
+    if adapter_spec is None:
+        raise AdapterError(503, "configuration_error", f"未対応の backend です: {backend}")
+    selected_model = model
+    if selected_model is None and adapter_spec.model_override is not None:
+        selected_model = model_overrides.get(adapter_spec.model_override)
+    if adapter_spec.model_override is None:
+        return adapter_spec.adapter_class(credentials=credentials)
+    return adapter_spec.adapter_class(credentials=credentials, default_model=selected_model)
+
+
+# 説明: 登録済みアダプター spec を正規バックエンド名だけで返す。
+# 引数: なし。
+# 返り値: 正規バックエンド名から AdapterSpec への対応表。
+def get_adapter_specs() -> dict[str, AdapterSpec]:
+    return {adapter_spec.name: adapter_spec for adapter_spec in dict.fromkeys(ADAPTER_SPECS.values())}
 
 
 __all__ = [
     "AdapterError",
-    "AnthropicAdapter",
-    "BACKEND_ANTHROPIC",
-    "BACKEND_CLAUDE_CODE",
-    "BACKEND_CODEX",
-    "BACKEND_COPILOT",
-    "BACKEND_NVIDIA",
-    "ClaudeCodeAdapter",
-    "CodexAdapter",
-    "CopilotAdapter",
-    "NvidiaNimAdapter",
+    "AdapterSpec",
     "RawAdapterResponse",
     "build_adapter",
+    "get_adapter_specs",
+    *sorted({adapter_spec.adapter_class.__name__ for adapter_spec in ADAPTER_SPECS.values()}),
 ]

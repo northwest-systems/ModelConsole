@@ -327,3 +327,11 @@ def _requested_model_from_path(upstream_path: str) -> str:
     if not path.startswith(prefix):
         return ""
     return urllib.parse.unquote(path[len(prefix) :])
+
+
+ADAPTER_SPEC = {
+    "name": "copilot",
+    "aliases": (),
+    "adapter_class": CopilotAdapter,
+    "model_override": "copilot_model",
+}

@@ -681,3 +681,11 @@ def _map_model_to_nvidia(model: Any, default_model: str = DEFAULT_NVIDIA_MODEL) 
     if "/" in model_name and not model_name.startswith("claude-"):
         return model_name
     return default_model
+
+
+ADAPTER_SPEC = {
+    "name": "nvidia",
+    "aliases": ("nim", "nvidia-nim"),
+    "adapter_class": NvidiaNimAdapter,
+    "model_override": "nvidia_model",
+}

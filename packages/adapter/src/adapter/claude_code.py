@@ -315,3 +315,11 @@ def _requested_model_from_path(upstream_path: str) -> str:
     if not path.startswith(prefix):
         return ""
     return urllib.parse.unquote(path[len(prefix) :])
+
+
+ADAPTER_SPEC = {
+    "name": "claude-code",
+    "aliases": ("claude",),
+    "adapter_class": ClaudeCodeAdapter,
+    "model_override": "claude_code_model",
+}
