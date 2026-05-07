@@ -42,13 +42,41 @@ from server import build_status, run_server
 LOGIN_TARGETS = ("claude", "codex", "copilot", "nvidia")
 
 
+# 説明: argparse の標準 help 表示を mcon 用の日本語表記にする。
+# 引数: argparse.ArgumentParser と同じ初期化引数。
+# 返り値: 日本語 help option を持つ parser instance。
+class MconArgumentParser(argparse.ArgumentParser):
+    # 説明: parser を初期化し、日本語 help option を追加する。
+    # 引数: argparse.ArgumentParser と同じ初期化引数。
+    # 返り値: なし。
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        kwargs.setdefault("add_help", False)
+        super().__init__(*args, **kwargs)
+        self.add_argument("-h", "--help", action="help", help="この説明を表示して終了する")
+
+    # 説明: argparse が組み立てた help text の標準見出しを日本語へ置き換える。
+    # 引数: なし。
+    # 返り値: 日本語見出しを反映した help text。
+    def format_help(self) -> str:
+        help_text = super().format_help()
+        replacements = {
+            "usage:": "使い方:",
+            "positional arguments:": "位置引数:",
+            "options:": "オプション:",
+            "optional arguments:": "オプション:",
+        }
+        for source_text, replacement_text in replacements.items():
+            help_text = help_text.replace(source_text, replacement_text)
+        return help_text
+
+
 # 説明: コマンドライン引数を解釈し、選択されたサブコマンドへ処理を振り分ける。
 # 引数: argv は program 名を含まないコマンドライン引数。None の場合は sys.argv から読む。
-# 返り値: 選択された command の process exit code。
+# 返り値: 選択された command のプロセス終了コード。
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="mcon")
+    parser = MconArgumentParser(prog="mcon")
     parser.add_argument("--data-dir", type=Path, default=None, help="データディレクトリ (標準: $MCON_DATA_DIR または /data)")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True, parser_class=MconArgumentParser)
 
     subparsers.add_parser("init", help="mcon data file を初期化する")
     subparsers.add_parser("serve", help="mcon server API を起動する")
@@ -61,6 +89,13 @@ def main(argv: list[str] | None = None) -> int:
     tui_parser.add_argument("--backend", default=None, help="新規 session 用バックエンド")
     tui_parser.add_argument("--model", default=None, help="新規 session 用 model")
     tui_parser.add_argument("--title", default=None, help="新規 session 用 title")
+
+    boot_parser = subparsers.add_parser("boot", help="backend を選択して mcon ターミナル frontend を起動する")
+    boot_parser.add_argument("backend", nargs="?", default=None, help="起動する backend 名または alias")
+    boot_parser.add_argument("--server", default=None, help="mcon server URL (標準: runtime.json または常駐ホスト server)")
+    boot_parser.add_argument("--session", default=None, help="開く既存 session id")
+    boot_parser.add_argument("--model", default=None, help="新規 session 用 model")
+    boot_parser.add_argument("--title", default=None, help="新規 session 用 title")
     code_parser = subparsers.add_parser("code", help="既知の mcon file を $EDITOR で開く")
     code_parser.add_argument("key_or_path")
 
@@ -73,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     login_parser.add_argument("--print-command", action="store_true", help="OAuth command を実行せず表示だけ行う")
 
     backend_parser = subparsers.add_parser("backend", help=argparse.SUPPRESS)
-    backend_subparsers = backend_parser.add_subparsers(dest="backend_command", required=True)
+    backend_subparsers = backend_parser.add_subparsers(dest="backend_command", required=True, parser_class=MconArgumentParser)
     backend_list_parser = backend_subparsers.add_parser("list")
     backend_list_parser.add_argument("--plain", action="store_true")
     backend_normalize_parser = backend_subparsers.add_parser("normalize")
@@ -104,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor(data_directory)
     if args.command == "tui":
         return _cmd_tui(data_directory, args)
+    if args.command == "boot":
+        return _cmd_boot(data_directory, args)
     if args.command == "code":
         return _cmd_code(data_directory, args.key_or_path)
     if args.command == "login":
@@ -193,7 +230,7 @@ def _cmd_status(data_directory: Path) -> int:
 
 # 説明: 人間が読める形式の診断を実行する。
 # 引数: data_directory は runtime 設定の読み込みに使う root directory。
-# 返り値: 診断結果のうち最も重い exit code。ok、warn、fail のいずれか。
+# 返り値: 診断結果のうち最も重い終了コード。ok、warn、fail のいずれか。
 def _cmd_doctor(data_directory: Path) -> int:
     runtime_config = load_config(data_directory)
     checks = run_doctor(runtime_config)
@@ -209,7 +246,7 @@ def _cmd_doctor(data_directory: Path) -> int:
 
 # 説明: server API 経由でターミナル frontend を起動する。
 # 引数: data_directory は runtime 設定の読み込みに使う root directory。args は TUI option 用に parse 済みの argparse namespace。
-# 返り値: TUI process の exit code。
+# 返り値: TUI プロセスの終了コード。
 def _cmd_tui(data_directory: Path, args: argparse.Namespace) -> int:
     from tui import run_tui
 
@@ -223,6 +260,72 @@ def _cmd_tui(data_directory: Path, args: argparse.Namespace) -> int:
         model=args.model,
         title=args.title,
     )
+
+
+# 説明: backend と model を必要に応じて対話選択し、TUI を起動する。
+# 引数: data_directory は runtime 設定と認証状態の読み込みに使う root directory。args は boot option 用に parse 済みの argparse namespace。
+# 返り値: TUI プロセスの終了コード。選択や backend 指定が不正な場合は EXIT_FAIL。
+def _cmd_boot(data_directory: Path, args: argparse.Namespace) -> int:
+    from tui import run_tui
+
+    initialize_data_directory(data_directory)
+    runtime_config = load_config(data_directory)
+    try:
+        backend_name = normalize_backend_name(args.backend) if args.backend else _select_boot_backend(data_directory)
+        model_name = args.model if args.model else _select_boot_model(backend_name)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return EXIT_FAIL
+    return run_tui(
+        runtime_config,
+        server_url=args.server,
+        session_id=args.session,
+        backend=backend_name,
+        model=model_name,
+        title=args.title,
+    )
+
+
+# 説明: boot 対象 backend を標準入力から選択する。
+# 引数: data_directory は認証状態ラベルの生成に使う mcon データディレクトリ。
+# 返り値: 選択された backend の正規名。非対話または不正入力なら ValueError を送出する。
+def _select_boot_backend(data_directory: Path) -> str:
+    backend_specs = get_backend_specs()
+    if not sys.stdin.isatty():
+        raise ValueError("mcon boot <backend> を指定してください。例: mcon boot codex")
+    print("mcon boot 対象を選択してください:", file=sys.stderr)
+    for index, backend_spec in enumerate(backend_specs, start=1):
+        print(f"  {index}) {backend_spec.name:<12} {get_auth_label(data_directory, backend_spec.name)}", file=sys.stderr)
+    print("backend> ", end="", file=sys.stderr, flush=True)
+    choice = sys.stdin.readline().strip()
+    if not choice:
+        raise ValueError("boot 対象が選択されていません")
+    if choice.isdigit() and 1 <= int(choice) <= len(backend_specs):
+        return backend_specs[int(choice) - 1].name
+    return normalize_backend_name(choice)
+
+
+# 説明: boot 対象 backend の model を標準入力から選択する。
+# 引数: backend_name は model 候補を取得する対象 backend 名。
+# 返り値: 選択された model id。空入力なら標準 model。
+def _select_boot_model(backend_name: str) -> str:
+    default_model = get_default_model(backend_name)
+    model_candidates = get_model_candidates(backend_name)
+    if not sys.stdin.isatty():
+        return default_model
+    if model_candidates:
+        print(f"{backend_name} の model を選択してください:", file=sys.stderr)
+        for index, model_candidate in enumerate(model_candidates, start=1):
+            suffix = " [標準]" if model_candidate == default_model else ""
+            print(f"  {index}) {model_candidate}{suffix}", file=sys.stderr)
+        print("  custom) model id を入力する", file=sys.stderr)
+    print(f"model [{default_model or 'default'}]> ", end="", file=sys.stderr, flush=True)
+    selected_model = sys.stdin.readline().strip()
+    if not selected_model:
+        return default_model
+    if selected_model.isdigit() and 1 <= int(selected_model) <= len(model_candidates):
+        return model_candidates[int(selected_model) - 1]
+    return selected_model
 
 
 # 説明: 既知の mcon file または任意 path を設定済み editor で開く。
@@ -336,7 +439,7 @@ def _cmd_list_paths(data_directory: Path) -> int:
 
 # 説明: 編集または確認可能な runtime path の map を組み立てる。
 # 引数: runtime_config は data_directory を持つ runtime 設定 object。
-# 返り値: 短い path key から具体的な filesystem path への mapping。
+# 返り値: 短い path key から具体的な filesystem path への対応表。
 def _known_paths(runtime_config: object) -> dict[str, Path]:
     data_directory = runtime_config.data_directory
     return {
@@ -351,9 +454,9 @@ def _known_paths(runtime_config: object) -> dict[str, Path]:
     }
 
 
-# 説明: process id が存在するか確認する。
-# 引数: pid は確認対象の process id。
-# 返り値: process が存在する場合は True。それ以外は False。
+# 説明: プロセス ID が存在するか確認する。
+# 引数: pid は確認対象のプロセス ID。
+# 返り値: プロセスが存在する場合は True。それ以外は False。
 def _pid_is_running(pid: int) -> bool:
     try:
         os.kill(pid, 0)

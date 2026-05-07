@@ -1,4 +1,4 @@
-"""Minimal terminal frontend for the mcon server API."""
+# 説明: mcon server API 用の最小ターミナル frontend。
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ from config import RuntimeConfig
 from runtime import read_runtime
 
 
+# 説明: mcon server API を使う対話型ターミナル client を起動する。
+# 引数: runtime_config は server 起動用 runtime 設定。server_url、session_id、backend、model、title は接続先と session 作成条件。
+# 返り値: TUI session のプロセス終了コード。
 def run_tui(
     runtime_config: RuntimeConfig,
     *,
@@ -23,20 +26,6 @@ def run_tui(
     model: str | None = None,
     title: str | None = None,
 ) -> int:
-    """Run an interactive terminal client backed by the mcon server.
-
-    Args:
-        runtime_config: Loaded runtime configuration for server startup.
-        server_url: Existing server URL. ``None`` starts or reuses a local one.
-        session_id: Existing session id to attach to.
-        backend: Backend name for a newly created session.
-        model: Model name for a newly created session.
-        title: Session title for a newly created session.
-
-    Returns:
-        Process exit code for the TUI session.
-    """
-
     _configure_terminal_input()
     resolved_server_url = server_url or _ensure_server(runtime_config)
     print(f"mcon tui -> {resolved_server_url}", file=sys.stderr)
@@ -102,16 +91,10 @@ def run_tui(
         print(assistant_message.get("content", ""))
 
 
+# 説明: 正常な server URL を返し、必要なら常駐ホスト server を起動する。
+# 引数: runtime_config は server 起動用 runtime 設定。
+# 返り値: server API の HTTP base URL。
 def _ensure_server(runtime_config: RuntimeConfig) -> str:
-    """Return a healthy server URL, starting a persistent host server when needed.
-
-    Args:
-        runtime_config: Loaded runtime configuration for server startup.
-
-    Returns:
-        HTTP base URL for the server API.
-    """
-
     runtime_data = read_runtime(runtime_config.runtime_path)
     runtime_url = runtime_data.get("server_url")
     if runtime_url and _server_is_healthy(str(runtime_url)):
@@ -133,25 +116,19 @@ def _ensure_server(runtime_config: RuntimeConfig) -> str:
     deadline = time.time() + 10
     while time.time() < deadline:
         if process.poll() is not None:
-            raise RuntimeError("mcon server exited before becoming healthy")
+            raise RuntimeError("mcon server が healthy になる前に終了しました")
         runtime_data = read_runtime(runtime_config.runtime_path)
         runtime_url = runtime_data.get("server_url")
         if runtime_url and _server_is_healthy(str(runtime_url)):
             return str(runtime_url)
         time.sleep(0.1)
-    raise RuntimeError("mcon server did not become healthy within 10 seconds")
+    raise RuntimeError("mcon server が 10 秒以内に healthy になりませんでした")
 
 
+# 説明: server health endpoint が応答するか確認する。
+# 引数: server_url は確認対象の HTTP base URL。
+# 返り値: /health が valid JSON を返せば True、それ以外は False。
 def _server_is_healthy(server_url: str) -> bool:
-    """Check whether the server health endpoint responds.
-
-    Args:
-        server_url: HTTP base URL to probe.
-
-    Returns:
-        ``True`` when ``/health`` returns valid JSON, otherwise ``False``.
-    """
-
     try:
         _api_get(server_url, "/health")
         return True
@@ -159,6 +136,9 @@ def _server_is_healthy(server_url: str) -> bool:
         return False
 
 
+# 説明: 現在の chat session を探すか作成する。
+# 引数: server_url は server API の HTTP base URL。session_id、backend、model、title は session 選択または作成条件。
+# 返り値: server が返した session metadata。
 def _ensure_session(
     server_url: str,
     *,
@@ -167,19 +147,6 @@ def _ensure_session(
     model: str | None,
     title: str | None,
 ) -> dict[str, Any]:
-    """Find or create the current chat session.
-
-    Args:
-        server_url: HTTP base URL for the server API.
-        session_id: Existing session id requested by the caller.
-        backend: Backend name for session selection/creation.
-        model: Model name for session selection/creation.
-        title: Title for session creation.
-
-    Returns:
-        Session metadata returned by the server.
-    """
-
     if session_id:
         return _api_get(server_url, f"/api/sessions/{session_id}")["session"]
     sessions = _api_get(server_url, "/api/sessions").get("sessions", [])
@@ -197,36 +164,18 @@ def _ensure_session(
     return _api_post(server_url, "/api/sessions", {"backend": backend, "model": model, "title": title})["session"]
 
 
+# 説明: server API の JSON GET endpoint を呼び出す。
+# 引数: server_url は server API の HTTP base URL。path は / で始まる API path。
+# 返り値: response body から decode した JSON object。
 def _api_get(server_url: str, path: str) -> dict[str, Any]:
-    """Call a JSON GET endpoint on the server API.
-
-    Args:
-        server_url: HTTP base URL for the server API.
-        path: Absolute API path beginning with ``/``.
-
-    Returns:
-        Decoded JSON object from the response body.
-    """
-
     with urllib.request.urlopen(f"{server_url.rstrip('/')}{path}", timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
+# 説明: server API の JSON POST endpoint を呼び出す。
+# 引数: server_url は server API の HTTP base URL。path は / で始まる API path。payload は JSON 化する request body。
+# 返り値: response body から decode した JSON object。HTTP error 時は RuntimeError を送出する。
 def _api_post(server_url: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Call a JSON POST endpoint on the server API.
-
-    Args:
-        server_url: HTTP base URL for the server API.
-        path: Absolute API path beginning with ``/``.
-        payload: JSON-serializable request payload.
-
-    Returns:
-        Decoded JSON object from the response body.
-
-    Raises:
-        RuntimeError: When the server returns an HTTP error response.
-    """
-
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         f"{server_url.rstrip('/')}{path}",
@@ -246,43 +195,25 @@ def _api_post(server_url: str, path: str, payload: dict[str, Any]) -> dict[str, 
         raise RuntimeError(error_payload.get("message") or error_payload.get("error") or response_body) from http_error
 
 
+# 説明: active session の概要を表示する。
+# 引数: session は server が返した session metadata。
+# 返り値: なし。
 def _print_session(session: dict[str, Any]) -> None:
-    """Print the active session summary.
-
-    Args:
-        session: Session metadata returned by the server.
-
-    Returns:
-        ``None``.
-    """
-
     print(f"session: {session['id']} backend={session['backend']} model={session['model']} title={session['title']}")
 
 
+# 説明: TUI slash command の一覧を表示する。
+# 引数: なし。
+# 返り値: なし。
 def _print_help() -> None:
-    """Print available TUI slash commands.
-
-    Args:
-        None.
-
-    Returns:
-        ``None``.
-    """
-
     print("commands: /new [title], /sessions, /use <session-id>, /transcript, /help, /quit, exit")
     print("exit closes only this TUI client; use `mcon stop` to stop the server", file=sys.stderr)
 
 
+# 説明: 利用可能な場合に readline editing を有効化し、特殊 key が escape bytes として表示されるのを避ける。
+# 引数: なし。
+# 返り値: なし。
 def _configure_terminal_input() -> None:
-    """Enable readline editing when available so special keys do not print escape bytes.
-
-    Args:
-        None.
-
-    Returns:
-        ``None``.
-    """
-
     if not sys.stdin.isatty():
         return
     try:
