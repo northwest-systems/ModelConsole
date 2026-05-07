@@ -24,6 +24,14 @@ from auth import (
 )
 
 from config import initialize_data_directory, load_config
+from config.backends import (
+    get_auth_label,
+    get_backend_specs,
+    get_container_environment_names,
+    get_default_model,
+    get_model_candidates,
+    normalize_backend_name,
+)
 from config.constants import EXIT_FAIL, EXIT_OK, EXIT_WARN
 from config.paths import get_data_directory
 from doctor import run_doctor
@@ -71,6 +79,20 @@ def main(argv: list[str] | None = None) -> int:
     login_parser.add_argument("--setup-token", action="store_true", help="use Claude setup-token OAuth flow")
     login_parser.add_argument("--print-command", action="store_true", help="print OAuth command instead of running it")
 
+    backend_parser = subparsers.add_parser("backend", help=argparse.SUPPRESS)
+    backend_subparsers = backend_parser.add_subparsers(dest="backend_command", required=True)
+    backend_list_parser = backend_subparsers.add_parser("list")
+    backend_list_parser.add_argument("--plain", action="store_true")
+    backend_normalize_parser = backend_subparsers.add_parser("normalize")
+    backend_normalize_parser.add_argument("backend")
+    backend_default_model_parser = backend_subparsers.add_parser("default-model")
+    backend_default_model_parser.add_argument("backend")
+    backend_models_parser = backend_subparsers.add_parser("model-candidates")
+    backend_models_parser.add_argument("backend")
+    backend_auth_label_parser = backend_subparsers.add_parser("auth-label")
+    backend_auth_label_parser.add_argument("backend")
+    backend_subparsers.add_parser("container-env")
+
     subparsers.add_parser("list", help=argparse.SUPPRESS).add_argument("topic", choices=["paths"])
     subparsers.add_parser("list-paths", help="list known mcon paths")
 
@@ -93,6 +115,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_code(data_directory, args.key_or_path)
     if args.command == "login":
         return _cmd_login(data_directory, args)
+    if args.command == "backend":
+        return _cmd_backend(data_directory, args)
     if args.command == "list-paths" or (args.command == "list" and args.topic == "paths"):
         return _cmd_list_paths(data_directory)
     parser.error("unknown command")
@@ -304,6 +328,46 @@ def _cmd_login(data_directory: Path, args: argparse.Namespace) -> int:
         print("command: " + " ".join(result.command))
     print(f"oauth: target={result.target} source={result.credential_source}")
     return EXIT_OK
+
+
+def _cmd_backend(data_directory: Path, args: argparse.Namespace) -> int:
+    """薄い shell wrapper 向けに backend registry 情報を出力する。
+
+    Args:
+        data_directory: credential 状態の確認に使う data directory。
+        args: backend subcommand の argparse namespace。
+
+    Returns:
+        成功時は ``EXIT_OK``、失敗時は ``EXIT_FAIL``。
+    """
+
+    try:
+        if args.backend_command == "list":
+            backend_names = [backend_spec.name for backend_spec in get_backend_specs()]
+            print(" ".join(backend_names) if args.plain else json.dumps(backend_names, ensure_ascii=False))
+            return EXIT_OK
+        if args.backend_command == "normalize":
+            print(normalize_backend_name(args.backend))
+            return EXIT_OK
+        if args.backend_command == "default-model":
+            print(get_default_model(args.backend))
+            return EXIT_OK
+        if args.backend_command == "model-candidates":
+            for model_candidate in get_model_candidates(args.backend):
+                print(model_candidate)
+            return EXIT_OK
+        if args.backend_command == "auth-label":
+            print(get_auth_label(data_directory, args.backend))
+            return EXIT_OK
+        if args.backend_command == "container-env":
+            for environment_name in get_container_environment_names():
+                print(environment_name)
+            return EXIT_OK
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return EXIT_FAIL
+    print(f"unknown backend command: {args.backend_command}", file=sys.stderr)
+    return EXIT_FAIL
 
 
 def _read_api_key(target: str, api_key_env: str | None) -> str:
