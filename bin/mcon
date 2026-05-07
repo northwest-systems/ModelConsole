@@ -1,0 +1,655 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# MCON_IMAGE: mcon setup/build が作成する Docker image 名。
+image_name="${MCON_IMAGE:-mcon:local}"
+
+# MCON_CONTAINER: mcon start/stop/down が操作する Docker container 名。
+container_name="${MCON_CONTAINER:-mcon}"
+
+# MCON_BACKENDS: boot の候補として表示/許可する backend 一覧。
+backend_choices="${MCON_BACKENDS:-claude-code anthropic codex copilot nvidia}"
+
+# MCON_DATA_DIR: host 側の永続 data directory。container には /data として mount する。
+export MCON_DATA_DIR="${MCON_DATA_DIR:-"$repo_root/data"}"
+
+# UV_CACHE_DIR: host 側で uv run する時の cache directory。
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
+
+# PYTHONPATH: uv script entrypoint を使わず、micro package sources を直接 import するために設定する。
+export PYTHONPATH="$repo_root/packages/mcon/src:$repo_root/packages/cli/src:$repo_root/packages/tui/src:$repo_root/packages/server/src:$repo_root/packages/system/src:$repo_root/packages/auth/src:$repo_root/packages/audit/src:$repo_root/packages/config/src:$repo_root/packages/runtime/src:$repo_root/packages/doctor/src:$repo_root/packages/middleware/src:$repo_root/packages/adapter/src${PYTHONPATH:+:$PYTHONPATH}"
+
+# usage: mcon wrapper の利用方法を表示する。引数なし、戻り値は標準出力のみ。
+usage() {
+  local lines=(
+    "mcon host wrapper"
+    ""
+    "Usage:"
+    "  mcon setup [--force]     Initialize host data and build the mcon Docker image without cache once"
+    "  mcon start               Start the mcon container from the local image"
+    "  mcon boot [backend]      Run the mcon TUI through the server/system/backend path"
+    "  mcon build               Build the mcon Docker image without cache"
+    "  mcon stop                Stop the host mcon server and the mcon container if running"
+    "  mcon down                Stop/remove the mcon container and stop the host server"
+    "  mcon restart             Recreate the mcon container from the local image"
+    "  mcon shell               Open a shell in the mcon container"
+    "  mcon logs [args...]      Show container logs"
+    "  mcon ps                  Show mcon container status"
+    "  mcon host [args...]      Run the host-side mcon CLI via uv"
+    "  mcon container [args...] Run mcon inside the container"
+    "  mcon <cli args...>       Run mcon inside the container"
+    ""
+    "Examples:"
+    "  mcon doctor"
+    "  mcon setup"
+    "  mcon start"
+    "  mcon login codex --method oauth"
+    "  mcon boot codex --model gpt-5.3-codex"
+    "  mcon login copilot --method oauth"
+    "  mcon boot copilot"
+    "  mcon login nvidia --method api-key"
+    "  mcon boot nvidia --model nvidia/llama-3.3-nemotron-super-49b-v1.5"
+    "  mcon shell"
+    "  mcon host doctor"
+  )
+  printf "%s\n" "${lines[@]}"
+}
+
+# host_cli: host 側で mcon CLI を実行する。引数は mcon CLI へそのまま渡し、戻り値は uv/python の終了コード。
+host_cli() {
+  cd "$repo_root"
+  uv run --no-project python -m mcon.cli "$@"
+}
+
+# run_host_cli: host 側 mcon CLI へ exec で置き換える。引数は mcon CLI へそのまま渡し、戻り値は exec 先の終了コード。
+run_host_cli() {
+  cd "$repo_root"
+  exec uv run --no-project python -m mcon.cli "$@"
+}
+
+# build_image: Docker image を no-cache で再構築する。引数は docker build へ追加で渡し、戻り値は docker build の終了コード。
+build_image() {
+  cd "$repo_root"
+  local previous_image_id
+  local current_image_id
+  previous_image_id="$(docker image inspect -f '{{.Id}}' "$image_name" 2>/dev/null || true)"
+  docker build --no-cache -t "$image_name" "$repo_root" "$@"
+  current_image_id="$(docker image inspect -f '{{.Id}}' "$image_name" 2>/dev/null || true)"
+  remove_previous_image "$previous_image_id" "$current_image_id"
+}
+
+# setup_marker_path: setup 済み marker の path を出力する。引数なし、戻り値は標準出力の path。
+setup_marker_path() {
+  printf "%s\n" "$MCON_DATA_DIR/.setup-complete"
+}
+
+# image_exists: 現在の MCON_IMAGE が存在するか確認する。引数なし、戻り値は存在すれば 0。
+image_exists() {
+  docker image inspect "$image_name" >/dev/null 2>&1
+}
+
+# remove_previous_image: 古い image id を削除する。第1引数は旧 id、第2引数は現 id、戻り値は常に処理結果の終了コード。
+remove_previous_image() {
+  local previous_image_id="$1"
+  local current_image_id="$2"
+  if [ -z "$previous_image_id" ] || [ "$previous_image_id" = "$current_image_id" ]; then
+    return 0
+  fi
+  if docker image rm --force "$previous_image_id" >/dev/null 2>&1; then
+    echo "removed previous mcon Docker image: ${previous_image_id#sha256:}" >&2
+    return 0
+  fi
+  echo "warning: could not remove previous mcon Docker image: ${previous_image_id#sha256:}" >&2
+}
+
+# container_exists: 現在の MCON_CONTAINER が存在するか確認する。引数なし、戻り値は存在すれば 0。
+container_exists() {
+  docker container inspect "$container_name" >/dev/null 2>&1
+}
+
+# container_running: 現在の MCON_CONTAINER が起動中か確認する。引数なし、戻り値は起動中なら 0。
+container_running() {
+  [ "$(docker container inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)" = "true" ]
+}
+
+# remove_container_if_exists: 既存 container を削除する。引数なし、戻り値は docker rm の終了コード。
+remove_container_if_exists() {
+  if container_exists; then
+    docker rm -f "$container_name" >/dev/null
+    echo "removed existing mcon container: $container_name" >&2
+  fi
+}
+
+# docker_exec: 起動中 container 内でコマンドを実行する。引数は docker exec へ渡し、戻り値は実行コマンドの終了コード。
+docker_exec() {
+  if ! container_running; then
+    echo "mcon container is not running. Run: mcon start" >&2
+    return 2
+  fi
+  if [ -t 0 ] && [ -t 1 ]; then
+    exec docker exec -it "$container_name" "$@"
+  fi
+  exec docker exec "$container_name" "$@"
+}
+
+# is_backend: 指定名が MCON_BACKENDS に含まれるか確認する。第1引数は backend 名、戻り値は一致すれば 0。
+is_backend() {
+  local backend="$1"
+  local candidate
+  for candidate in $backend_choices; do
+    if [ "$candidate" = "$backend" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# credential_file_has: vault/cli-auth.env に指定環境変数があるか確認する。第1引数は変数名、戻り値は存在すれば 0。
+credential_file_has() {
+  local variable_name="$1"
+  local credentials_path="$MCON_DATA_DIR/vault/cli-auth.env"
+  [ -f "$credentials_path" ] && grep -q "^${variable_name}=" "$credentials_path"
+}
+
+# backend_is_authed: backend の認証情報が環境変数/credential file/OAuth file のどれかにあるか確認する。第1引数は backend 名、戻り値は認証済みなら 0。
+backend_is_authed() {
+  local backend="$1"
+  if [ "$backend" = "anthropic" ] || [ "$backend" = "claude-code" ] || [ "$backend" = "claude" ]; then
+    if [ -n "${ANTHROPIC_API_KEY:-}" ] || credential_file_has ANTHROPIC_API_KEY || [ -f "$MCON_DATA_DIR/home/.claude.json" ]; then
+      return 0
+    else
+      return 1
+    fi
+  fi
+  if [ "$backend" = "codex" ]; then
+    if [ -n "${OPENAI_API_KEY:-}" ] || credential_file_has OPENAI_API_KEY || [ -f "$MCON_DATA_DIR/home/.codex/auth.json" ]; then
+      return 0
+    else
+      return 1
+    fi
+  fi
+  if [ "$backend" = "copilot" ]; then
+    if [ -n "${COPILOT_GITHUB_TOKEN:-}" ] || [ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ] || credential_file_has COPILOT_GITHUB_TOKEN; then
+      return 0
+    else
+      return 1
+    fi
+  fi
+  if [ "$backend" = "nvidia" ]; then
+    if [ -n "${NVIDIA_API_KEY:-}" ] || [ -n "${NGC_API_KEY:-}" ] || credential_file_has NVIDIA_API_KEY; then
+      return 0
+    else
+      return 1
+    fi
+  fi
+  return 1
+}
+
+# auth_label: boot 選択画面に出す認証状態ラベルを出力する。第1引数は target 名、戻り値は標準出力のラベル。
+auth_label() {
+  local target="$1"
+  if backend_is_authed "$target"; then
+    printf "[Authed]"
+  elif [ "$target" = "anthropic" ] || [ "$target" = "claude-code" ] || [ "$target" = "claude" ]; then
+    printf "[No Authed] login: mcon login claude --method oauth"
+  elif [ "$target" = "nvidia" ]; then
+    printf "[No Authed] login: mcon login nvidia --method api-key"
+  else
+    printf "[No Authed] login: mcon login %s --method oauth" "$target"
+  fi
+}
+
+# default_model_for_target: target ごとの標準 model を出力する。第1引数は target 名、戻り値は標準出力の model id。
+default_model_for_target() {
+  local target="$1"
+  case "$target" in
+    codex|copilot)
+      printf "%s" "${MCON_BACKEND_MODEL:-gpt-5.3-codex}"
+      ;;
+    nvidia)
+      printf "%s" "${MCON_BACKEND_MODEL:-nvidia/llama-3.3-nemotron-super-49b-v1.5}"
+      ;;
+    anthropic)
+      printf "%s" "${MCON_BACKEND_MODEL:-claude-3-5-sonnet-latest}"
+      ;;
+    claude|claude-code)
+      printf "%s" "${MCON_BACKEND_MODEL:-claude-sonnet-4-6}"
+      ;;
+    *)
+      printf ""
+      ;;
+  esac
+}
+
+# model_candidates_for_target: target ごとの model 候補を重複なしで出力する。第1引数は target 名、戻り値は標準出力の候補一覧。
+model_candidates_for_target() {
+  local target="$1"
+  local default_model
+  default_model="$(default_model_for_target "$target")"
+  {
+    if [ -n "$default_model" ]; then
+      printf "%s\n" "$default_model"
+    fi
+    case "$target" in
+      codex|copilot)
+        printf "%s\n" \
+          "gpt-5.3-codex" \
+          "gpt-5.2"
+        ;;
+      nvidia)
+        printf "%s\n" \
+          "nvidia/llama-3.1-nemotron-ultra-253b-v1" \
+          "meta/llama-3.3-70b-instruct" \
+          "deepseek-ai/deepseek-v3.2" \
+          "minimaxai/minimax-m2.7" \
+          "qwen/qwen3-coder-480b-a35b-instruct"
+        ;;
+      anthropic)
+        printf "%s\n" \
+          "claude-3-5-sonnet-latest" \
+          "claude-sonnet-4-6"
+        ;;
+      claude|claude-code)
+        printf "%s\n" \
+          "claude-sonnet-4-6" \
+          "claude-3-5-sonnet-latest"
+        ;;
+    esac
+  } | awk '!seen[$0]++'
+}
+
+# print_boot_choices: boot target の選択肢を stderr に表示する。引数なし、戻り値は表示処理の終了コード。
+print_boot_choices() {
+  local index=1
+  local candidate
+  echo "Select mcon boot target:" >&2
+  for candidate in $backend_choices; do
+    printf "  %d) %-10s backend     %s\n" "$index" "$candidate" "$(auth_label "$candidate")" >&2
+    index=$((index + 1))
+  done
+}
+
+# select_boot_target: 対話的に boot target を選択する。引数なし、戻り値は標準出力の target 名。
+select_boot_target() {
+  host_cli init >/dev/null 2>&1
+  local options=()
+  local candidate
+  for candidate in $backend_choices; do
+    options+=("$candidate")
+  done
+
+  print_boot_choices
+  if ! [ -t 0 ]; then
+    echo "run mcon boot <target>, for example: mcon boot codex" >&2
+    return 2
+  fi
+
+  local choice
+  printf "target> " >&2
+  read -r choice
+  if [ -z "$choice" ]; then
+    return 2
+  fi
+  if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#options[@]}" ]; then
+    printf "%s\n" "${options[$((choice - 1))]}"
+    return 0
+  fi
+  for candidate in "${options[@]}"; do
+    if [ "$candidate" = "$choice" ]; then
+      printf "%s\n" "$candidate"
+      return 0
+    fi
+  done
+  echo "unknown boot target: $choice" >&2
+  return 2
+}
+
+# select_boot_model: 対話的に model を選択する。第1引数は target 名、戻り値は標準出力の model id。
+select_boot_model() {
+  local target="$1"
+  local default_model
+  default_model="$(default_model_for_target "$target")"
+  if ! [ -t 0 ]; then
+    printf "%s\n" "$default_model"
+    return 0
+  fi
+  local options=()
+  local candidate
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] && options+=("$candidate")
+  done < <(model_candidates_for_target "$target")
+
+  if [ "${#options[@]}" -gt 0 ]; then
+    echo "Select model for $target:" >&2
+    local index=1
+    for candidate in "${options[@]}"; do
+      if [ "$candidate" = "$default_model" ]; then
+        printf "  %d) %s [default]\n" "$index" "$candidate" >&2
+      else
+        printf "  %d) %s\n" "$index" "$candidate" >&2
+      fi
+      index=$((index + 1))
+    done
+    printf "  custom) type a model id\n" >&2
+  fi
+
+  printf "model [%s]> " "${default_model:-default}" >&2
+  local selected_model
+  read -r selected_model
+  if [ -z "$selected_model" ]; then
+    printf "%s\n" "$default_model"
+  elif [[ "$selected_model" =~ ^[0-9]+$ ]] && [ "$selected_model" -ge 1 ] && [ "$selected_model" -le "${#options[@]}" ]; then
+    printf "%s\n" "${options[$((selected_model - 1))]}"
+  else
+    printf "%s\n" "$selected_model"
+  fi
+}
+
+# run_container_cli: container 内 mcon CLI を実行する。引数は mcon CLI へ渡し、戻り値は docker exec/mcon の終了コード。
+run_container_cli() {
+  if [ "${1:-}" = "login" ] && [ "${2:-}" = "codex" ]; then
+    local has_oauth=0
+    local has_device_auth=0
+    local arg
+    for arg in "$@"; do
+      if [ "$arg" = "oauth" ]; then
+        has_oauth=1
+      elif [ "$arg" = "--device-auth" ]; then
+        has_device_auth=1
+      fi
+    done
+    if [ "$has_oauth" -eq 1 ] && [ "$has_device_auth" -eq 0 ]; then
+      set -- "$@" --device-auth
+    fi
+  fi
+  docker_exec mcon "$@"
+}
+
+# run_container: mcon server container を作成して detached 起動する。引数なし、戻り値は docker run の終了コード。
+run_container() {
+  cd "$repo_root"
+  mkdir -p "$MCON_DATA_DIR" "$MCON_DATA_DIR/home" "$MCON_DATA_DIR/audit" "$MCON_DATA_DIR/vault"
+  if [ -f "$MCON_DATA_DIR/vault/cli-auth.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$MCON_DATA_DIR/vault/cli-auth.env"
+    set +a
+  fi
+  # docker run に渡す環境変数:
+  # MCON_DATA_DIR は container 内 runtime root。
+  # ANTHROPIC_API_KEY/OPENAI_API_KEY/COPILOT_GITHUB_TOKEN/NVIDIA_API_KEY/NGC_API_KEY は provider 認証。
+  # GH_TOKEN/GITHUB_TOKEN は GitHub CLI/Copilot 互換の token 名。
+  # MCON_BACKEND_MODEL/MCON_CLAUDE_CODE_MODEL/MCON_CODEX_MODEL/MCON_COPILOT_MODEL/MCON_NVIDIA_MODEL は model override。
+  # MCON_NVIDIA_BASE_URL は NVIDIA compatible API endpoint override。
+  docker run \
+    --detach \
+    --name "$container_name" \
+    --user "$(id -u):$(id -g)" \
+    --env MCON_DATA_DIR=/data \
+    --env ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+    --env OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
+    --env COPILOT_GITHUB_TOKEN="${COPILOT_GITHUB_TOKEN:-}" \
+    --env NVIDIA_API_KEY="${NVIDIA_API_KEY:-}" \
+    --env NGC_API_KEY="${NGC_API_KEY:-}" \
+    --env GH_TOKEN="${GH_TOKEN:-}" \
+    --env GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+    --env MCON_BACKEND_MODEL="${MCON_BACKEND_MODEL:-}" \
+    --env MCON_CLAUDE_CODE_MODEL="${MCON_CLAUDE_CODE_MODEL:-}" \
+    --env MCON_CODEX_MODEL="${MCON_CODEX_MODEL:-}" \
+    --env MCON_COPILOT_MODEL="${MCON_COPILOT_MODEL:-}" \
+    --env MCON_NVIDIA_MODEL="${MCON_NVIDIA_MODEL:-}" \
+    --env MCON_NVIDIA_BASE_URL="${MCON_NVIDIA_BASE_URL:-}" \
+    --volume "$MCON_DATA_DIR:/data:rw" \
+    "$image_name"
+}
+
+# boot_container: 既存 container を再利用しつつ server container を起動する。引数は未使用、戻り値は起動処理の終了コード。
+boot_container() {
+  host_cli init >/dev/null 2>&1
+  if container_running; then
+    echo "mcon container is already running: $container_name" >&2
+    return 0
+  fi
+  if container_exists; then
+    docker start "$container_name" >/dev/null
+    echo "started mcon container: $container_name" >&2
+    return 0
+  fi
+  run_container >/dev/null
+  echo "booted mcon container: $container_name" >&2
+}
+
+case "${1:-}" in
+  ""|-h|--help)
+    usage
+    ;;
+  setup)
+    shift
+    force_setup=0
+    setup_args=()
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --force|--rebuild)
+          force_setup=1
+          ;;
+        *)
+          setup_args+=("$1")
+          ;;
+      esac
+      shift
+    done
+    host_cli init
+    setup_marker="$(setup_marker_path)"
+    if [ "$force_setup" -eq 0 ] && [ -f "$setup_marker" ] && image_exists; then
+      echo "mcon setup already completed. Use: mcon setup --force" >&2
+      exit 0
+    fi
+    remove_container_if_exists
+    build_image "${setup_args[@]}"
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$setup_marker"
+    ;;
+  init|serve|status|code|tui|list|list-paths)
+    command_name="$1"
+    shift
+    run_host_cli "$command_name" "$@"
+    ;;
+  doctor)
+    shift
+    host_status=0
+    container_status=0
+    echo "host doctor:" >&2
+    host_cli doctor "$@" || host_status=$?
+    if container_running; then
+      echo "container doctor:" >&2
+      if [ -t 0 ] && [ -t 1 ]; then
+        docker exec -it "$container_name" mcon doctor "$@" || container_status=$?
+      else
+        docker exec "$container_name" mcon doctor "$@" || container_status=$?
+      fi
+    else
+      echo "[WARN] container        not running; run mcon start" >&2
+      container_status=1
+    fi
+    if [ "$host_status" -gt "$container_status" ]; then
+      exit "$host_status"
+    fi
+    exit "$container_status"
+    ;;
+  build)
+    shift
+    build_image "$@"
+    ;;
+  boot)
+    shift
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+      cat <<'EOF'
+Usage:
+  mcon boot [backend] [--model MODEL] [--session SESSION_ID] [--title TITLE] [--server URL]
+
+Backends:
+  claude-code anthropic codex copilot nvidia
+
+Examples:
+  mcon boot claude-code --model claude-sonnet-4-6
+  mcon boot codex --model gpt-5.3-codex
+  mcon boot nvidia --model nvidia/llama-3.3-nemotron-super-49b-v1.5
+  mcon boot codex --server http://127.0.0.1:8765 --session SESSION_ID
+EOF
+      exit 0
+    fi
+    backend="${1:-}"
+    if [ -z "$backend" ]; then
+      backend="$(select_boot_target)"
+      model="$(select_boot_model "$backend")"
+      set --
+    else
+      shift
+      model=""
+      session=""
+      title=""
+      server_url=""
+      launch_args=()
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --model)
+            shift
+            if [ "$#" -eq 0 ]; then
+              echo "missing value for --model" >&2
+              exit 2
+            fi
+            model="$1"
+            ;;
+          --model=*)
+            model="${1#--model=}"
+            ;;
+          --session)
+            shift
+            if [ "$#" -eq 0 ]; then
+              echo "missing value for --session" >&2
+              exit 2
+            fi
+            session="$1"
+            ;;
+          --session=*)
+            session="${1#--session=}"
+            ;;
+          --title)
+            shift
+            if [ "$#" -eq 0 ]; then
+              echo "missing value for --title" >&2
+              exit 2
+            fi
+            title="$1"
+            ;;
+          --title=*)
+            title="${1#--title=}"
+            ;;
+          --server)
+            shift
+            if [ "$#" -eq 0 ]; then
+              echo "missing value for --server" >&2
+              exit 2
+            fi
+            server_url="$1"
+            ;;
+          --server=*)
+            server_url="${1#--server=}"
+            ;;
+          *)
+            launch_args+=("$1")
+            ;;
+        esac
+        shift || true
+      done
+      set -- "${launch_args[@]}"
+    fi
+    if [ "$backend" = "claude" ]; then
+      backend="claude-code"
+    fi
+    if ! is_backend "$backend" && [ "$backend" != "anthropic" ] && [ "$backend" != "claude-code" ]; then
+      echo "unknown backend: $backend" >&2
+      echo "known backends: $backend_choices" >&2
+      exit 2
+    fi
+    tui_args=(tui --backend "$backend")
+    if [ -n "${model:-}" ]; then
+      tui_args+=(--model "$model")
+    fi
+    if [ -n "${session:-}" ]; then
+      tui_args+=(--session "$session")
+    fi
+    if [ -n "${title:-}" ]; then
+      tui_args+=(--title "$title")
+    fi
+    if [ -n "${server_url:-}" ]; then
+      tui_args+=(--server "$server_url")
+    fi
+    run_host_cli "${tui_args[@]}" "$@"
+    ;;
+  login)
+    shift
+    run_host_cli login "$@"
+    ;;
+  start|up)
+    shift
+    boot_container "$@"
+    ;;
+  stop)
+    shift
+    host_cli stop || true
+    if container_running; then
+      docker stop "$container_name" "$@"
+    else
+      echo "mcon container is not running: $container_name" >&2
+    fi
+    ;;
+  down)
+    shift
+    host_cli stop || true
+    if container_exists; then
+      docker rm -f "$container_name" "$@"
+    else
+      echo "mcon container does not exist: $container_name" >&2
+    fi
+    ;;
+  restart)
+    shift
+    host_cli init >/dev/null 2>&1
+    if container_exists; then
+      docker rm -f "$container_name" >/dev/null
+    fi
+    run_container >/dev/null
+    echo "restarted mcon container: $container_name" >&2
+    ;;
+  shell)
+    shift
+    docker_exec bash "$@"
+    ;;
+  logs)
+    shift
+    exec docker logs "$@" "$container_name"
+    ;;
+  ps)
+    shift
+    exec docker ps --filter "name=^/${container_name}$" "$@"
+    ;;
+  container)
+    shift
+    run_container_cli "$@"
+    ;;
+  host)
+    shift
+    run_host_cli "$@"
+    ;;
+  *)
+    if is_backend "${1:-}"; then
+      backend="$1"
+      shift
+      echo "warning: use 'mcon boot $backend' instead of 'mcon $backend'" >&2
+      run_host_cli tui --backend "$backend" "$@"
+    fi
+    run_container_cli "$@"
+    ;;
+esac
