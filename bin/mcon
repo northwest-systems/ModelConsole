@@ -2,12 +2,12 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-image_name="${MCON_IMAGE:-mcon:local}"
-container_name="${MCON_CONTAINER:-mcon}"
-export MCON_DATA_DIR="${MCON_DATA_DIR:-"$repo_root/data"}"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
-existing_pythonpath="${PYTHONPATH:-}"
-export PYTHONPATH=""
+image_name="${MCON_IMAGE:-mcon:local}" # MCON_IMAGE: mcon setup/build が作成する Docker image 名。
+container_name="${MCON_CONTAINER:-mcon}" # MCON_CONTAINER: mcon start/stop/down が操作する Docker コンテナ名。
+export MCON_DATA_DIR="${MCON_DATA_DIR:-"$repo_root/data"}" # MCON_DATA_DIR: ホスト側の永続データディレクトリ。コンテナには /data としてマウントする。
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}" # UV_CACHE_DIR: ホスト側で uv run する時のキャッシュディレクトリ。
+existing_pythonpath="${PYTHONPATH:-}" # PYTHONPATH: 呼び出し元が設定済みの場合に末尾へ引き継ぐ Python import path。
+export PYTHONPATH="" # PYTHONPATH: mcon の micro package sources を 1 path ずつ連結するために初期化する。
 
 # 説明: Python import path を 1 件ずつ PYTHONPATH へ連結する。
 # 引数: 第1引数は追加する path。
