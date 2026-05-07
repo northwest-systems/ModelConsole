@@ -1,5 +1,6 @@
-# 説明: mcon 実行基盤が使うバックエンドアダプターの自動登録 factory。
-
+# 説明: このモジュールの処理。
+# 引数: なし。
+# 返り値: なし。
 from __future__ import annotations
 
 import importlib
@@ -9,21 +10,19 @@ from typing import Any
 
 from .anthropic import AdapterError, RawAdapterResponse
 
-
+# 説明: このクラスの処理を提供する。
+# 引数: 定義された引数を使用する。
+# 返り値: クラスのインスタンス。
 @dataclass(frozen=True)
-# 説明: アダプターモジュールが公開するバックエンド登録情報。
-# 引数: name は正規バックエンド名、aliases は別名、adapter_class は生成する class、model_override はバックエンド固有モデル引数名。
-# 返り値: AdapterSpec instance。
 class AdapterSpec:
     name: str
     aliases: tuple[str, ...]
     adapter_class: type[Any]
     model_override: str | None = None
 
-
-# 説明: アダプターパッケージ内のモジュールから ADAPTER_SPEC を収集する。
+# 説明: この関数の処理を行う。
 # 引数: なし。
-# 返り値: バックエンド名と別名から AdapterSpec への対応表。
+# 返り値: 型注釈に従う値を返す。
 def _load_adapter_specs() -> dict[str, AdapterSpec]:
     adapter_specs: dict[str, AdapterSpec] = {}
     for module_info in pkgutil.iter_modules(__path__):
@@ -45,13 +44,11 @@ def _load_adapter_specs() -> dict[str, AdapterSpec]:
         globals()[adapter_spec.adapter_class.__name__] = adapter_spec.adapter_class
     return adapter_specs
 
-
 ADAPTER_SPECS = _load_adapter_specs()
 
-
-# 説明: 選択されたバックエンドのアダプター instance を作成する。
-# 引数: backend はバックエンド名または別名。credentials は vault 由来の認証情報。model は共通モデル上書き。model_overrides はバックエンド固有モデル上書き。
-# 返り値: バックエンド request method を実装するアダプター instance。未対応バックエンドなら AdapterError を送出する。
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def build_adapter(
     backend: str = "anthropic",
     *,
@@ -70,13 +67,11 @@ def build_adapter(
         return adapter_spec.adapter_class(credentials=credentials)
     return adapter_spec.adapter_class(credentials=credentials, default_model=selected_model)
 
-
-# 説明: 登録済みアダプター spec を正規バックエンド名だけで返す。
+# 説明: この関数の処理を行う。
 # 引数: なし。
-# 返り値: 正規バックエンド名から AdapterSpec への対応表。
+# 返り値: 型注釈に従う値を返す。
 def get_adapter_specs() -> dict[str, AdapterSpec]:
     return {adapter_spec.name: adapter_spec for adapter_spec in dict.fromkeys(ADAPTER_SPECS.values())}
-
 
 __all__ = [
     "AdapterError",

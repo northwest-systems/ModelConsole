@@ -1,5 +1,6 @@
-"""GitHub Copilot CLI backend adapter for the mcon system runtime."""
-
+# 説明: このモジュールの処理。
+# 引数: なし。
+# 返り値: なし。
 from __future__ import annotations
 
 import json
@@ -12,59 +13,44 @@ from typing import Any
 from .anthropic import AdapterError, RawAdapterResponse
 from .codex import SyntheticStreamResponse, _anthropic_message_to_sse
 
-# GitHub Copilot CLI backend の標準 model。
+# GitHub Copilot CLI バックエンドの標準モデル。
 DEFAULT_COPILOT_MODEL = "gpt-5.3-codex"
 
-# Claude Code compatibility 用に models API へ見せる仮 model 名。
+# Claude Code 互換用に モデル API へ見せる仮モデル名。
 CLAUDE_PROXY_MODEL = "claude-sonnet-4-6"
 
-# Copilot CLI へ渡す model override の環境変数名。
+# Copilot CLI へ渡す モデル上書き用環境変数名。
 ENV_COPILOT_MODEL = "MCON_COPILOT_MODEL"
 
-# Copilot 認証で優先して読む token 環境変数名。
+# Copilot 認証で優先して読む トークン環境変数名。
 ENV_COPILOT_GITHUB_TOKEN = "COPILOT_GITHUB_TOKEN"
 
-# GitHub tooling 互換の token 環境変数名。
+# GitHub ツール互換の トークン環境変数名。
 ENV_GH_TOKEN = "GH_TOKEN"
 ENV_GITHUB_TOKEN = "GITHUB_TOKEN"
 
-
+# 説明: このクラスの処理を提供する。
+# 引数: 定義された引数を使用する。
+# 返り値: クラスのインスタンス。
 class CopilotAdapter:
-    """Translate simple Anthropic Messages API calls to GitHub Copilot CLI prompts."""
-
     backend_name = "copilot"
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: なし。
     def __init__(self, credentials: dict[str, str] | None = None, default_model: str | None = None) -> None:
-        """Initialize the Copilot adapter.
-
-        Args:
-            credentials: Optional credential values loaded from the vault.
-            default_model: Default Copilot model id.
-
-        Returns:
-            ``None``.
-        """
-
         self._credentials = credentials or {}
         self._default_model = default_model or DEFAULT_COPILOT_MODEL
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def forward_json(
         self,
         request_headers: Any,
         request_payload: dict[str, Any],
         upstream_path: str = "/v1/messages",
     ) -> tuple[dict[str, Any], int]:
-        """Forward an Anthropic Messages request to GitHub Copilot CLI.
-
-        Args:
-            request_headers: Incoming request headers.
-            request_payload: Anthropic-compatible JSON payload.
-            upstream_path: Anthropic-compatible upstream path.
-
-        Returns:
-            Tuple of Anthropic-compatible response payload and HTTP status code.
-        """
-
         if upstream_path == "/v1/messages/count_tokens":
             return {"input_tokens": len(_prompt_from_anthropic_request(request_payload).split())}, 200
         if upstream_path != "/v1/messages":
@@ -78,6 +64,9 @@ class CopilotAdapter:
         response_payload = _copilot_text_to_anthropic_message(output, request_payload, started_at)
         return response_payload, 200
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def request_json(
         self,
         method: str,
@@ -85,18 +74,6 @@ class CopilotAdapter:
         upstream_path: str,
         request_payload: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int]:
-        """Handle model and token-count endpoints for Copilot.
-
-        Args:
-            method: HTTP method.
-            request_headers: Incoming request headers.
-            upstream_path: Anthropic-compatible upstream path.
-            request_payload: Optional JSON payload.
-
-        Returns:
-            Tuple of response payload and HTTP status code.
-        """
-
         if upstream_path.startswith("/v1/models"):
             requested_model = _requested_model_from_path(upstream_path)
             if requested_model:
@@ -108,6 +85,9 @@ class CopilotAdapter:
             return {"input_tokens": len(_prompt_from_anthropic_request(request_payload).split())}, 200
         raise AdapterError(501, "not_supported", f"Copilot adapter does not implement {upstream_path}")
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def request_raw(
         self,
         method: str,
@@ -115,18 +95,6 @@ class CopilotAdapter:
         upstream_path: str,
         request_payload: dict[str, Any] | None = None,
     ) -> RawAdapterResponse:
-        """Return a raw JSON response for compatible endpoints.
-
-        Args:
-            method: HTTP method.
-            request_headers: Incoming request headers.
-            upstream_path: Anthropic-compatible upstream path.
-            request_payload: Optional JSON payload.
-
-        Returns:
-            Raw response metadata and body bytes.
-        """
-
         response_payload, status_code = self.request_json(method, request_headers, upstream_path, request_payload)
         return RawAdapterResponse(
             status_code=status_code,
@@ -134,6 +102,9 @@ class CopilotAdapter:
             body=json.dumps(response_payload, separators=(",", ":")).encode("utf-8"),
         )
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def request_raw_body(
         self,
         method: str,
@@ -141,37 +112,17 @@ class CopilotAdapter:
         upstream_path: str,
         body: bytes | None,
     ) -> RawAdapterResponse:
-        """Reject raw body requests because this adapter only runs prompt calls.
-
-        Args:
-            method: HTTP method.
-            request_headers: Incoming request headers.
-            upstream_path: Requested upstream path.
-            body: Raw request body.
-
-        Returns:
-            Never returns; raises ``AdapterError``.
-        """
-
         raise AdapterError(501, "not_supported", f"Copilot adapter does not implement raw body endpoint {upstream_path}")
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def open_stream(
         self,
         request_headers: Any,
         request_payload: dict[str, Any],
         upstream_path: str = "/v1/messages",
     ) -> SyntheticStreamResponse:
-        """Convert a non-streaming Copilot response into synthetic SSE.
-
-        Args:
-            request_headers: Incoming request headers.
-            request_payload: Anthropic-compatible JSON payload.
-            upstream_path: Anthropic-compatible upstream path.
-
-        Returns:
-            File-like synthetic SSE response.
-        """
-
         payload_without_stream = dict(request_payload)
         payload_without_stream["stream"] = False
         response_payload, status_code = self.forward_json(request_headers, payload_without_stream, upstream_path)
@@ -181,17 +132,10 @@ class CopilotAdapter:
             body=_anthropic_message_to_sse(response_payload),
         )
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def _run_copilot_prompt(self, prompt: str, request_payload: dict[str, Any]) -> str:
-        """Run GitHub Copilot CLI for one prompt.
-
-        Args:
-            prompt: Prompt text to pass to Copilot CLI.
-            request_payload: Original request payload, reserved for future options.
-
-        Returns:
-            Final assistant text from Copilot CLI.
-        """
-
         model = os.environ.get(ENV_COPILOT_MODEL) or self._default_model
         command = ["copilot", "-s", "-p", prompt, "--model", model, "--stream", "off", "--output-format", "text", "--no-color"]
         environment = dict(os.environ)
@@ -205,17 +149,10 @@ class CopilotAdapter:
             raise AdapterError(502, "upstream_error", message)
         return completed_process.stdout.strip()
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _prompt_from_anthropic_request(request_payload: dict[str, Any]) -> str:
-    """Build plain prompt text from an Anthropic request.
-
-    Args:
-        request_payload: Anthropic-compatible JSON payload.
-
-    Returns:
-        Prompt text for Copilot CLI.
-    """
-
     parts: list[str] = []
     system = request_payload.get("system")
     if system:
@@ -227,17 +164,10 @@ def _prompt_from_anthropic_request(request_payload: dict[str, Any]) -> str:
             parts.append(f"{role.title()}:\n{text}")
     return "\n\n".join(parts).strip()
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _content_to_text(content: Any) -> str:
-    """Convert Anthropic content blocks to plain text.
-
-    Args:
-        content: String or list of Anthropic content blocks.
-
-    Returns:
-        Plain text representation.
-    """
-
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -250,19 +180,10 @@ def _content_to_text(content: Any) -> str:
         return "\n".join(part for part in text_parts if part)
     return str(content)
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _copilot_text_to_anthropic_message(output: str, request_payload: dict[str, Any], started_at: float) -> dict[str, Any]:
-    """Wrap Copilot CLI text as an Anthropic message.
-
-    Args:
-        output: Copilot CLI output text.
-        request_payload: Original Anthropic-compatible request payload.
-        started_at: Request start timestamp.
-
-    Returns:
-        Anthropic-compatible message payload.
-    """
-
     input_tokens = len(_prompt_from_anthropic_request(request_payload).split())
     output_tokens = len(output.split())
     return {
@@ -276,17 +197,10 @@ def _copilot_text_to_anthropic_message(output: str, request_payload: dict[str, A
         "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
     }
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _copilot_models(model_id: str | None = None) -> dict[str, Any]:
-    """Build Anthropic-shaped Copilot model list.
-
-    Args:
-        model_id: Optional selected model id.
-
-    Returns:
-        Anthropic-compatible models payload.
-    """
-
     resolved_model_id = model_id or os.environ.get(ENV_COPILOT_MODEL, DEFAULT_COPILOT_MODEL)
     models = [_copilot_model(CLAUDE_PROXY_MODEL)]
     if resolved_model_id != CLAUDE_PROXY_MODEL:
@@ -298,36 +212,21 @@ def _copilot_models(model_id: str | None = None) -> dict[str, Any]:
         "last_id": models[-1]["id"],
     }
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _copilot_model(model_id: str) -> dict[str, Any]:
-    """Build one Anthropic-shaped model item.
-
-    Args:
-        model_id: Model identifier.
-
-    Returns:
-        Anthropic-compatible model item.
-    """
-
     return {"id": model_id, "type": "model", "display_name": model_id, "created_at": None}
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _requested_model_from_path(upstream_path: str) -> str:
-    """Extract a model id from a models endpoint path.
-
-    Args:
-        upstream_path: Requested upstream path.
-
-    Returns:
-        Decoded model id, or an empty string.
-    """
-
     path = urllib.parse.urlsplit(upstream_path).path
     prefix = "/v1/models/"
     if not path.startswith(prefix):
         return ""
     return urllib.parse.unquote(path[len(prefix) :])
-
 
 ADAPTER_SPEC = {
     "name": "copilot",

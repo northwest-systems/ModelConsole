@@ -1,5 +1,6 @@
-"""Claude Code CLI backend adapter for the mcon system runtime."""
-
+# 説明: このモジュールの処理。
+# 引数: なし。
+# 返り値: なし。
 from __future__ import annotations
 
 import json
@@ -11,52 +12,37 @@ from typing import Any
 from .anthropic import AdapterError, RawAdapterResponse
 from .codex import SyntheticStreamResponse, _anthropic_message_to_sse
 
-# Claude Code CLI backend の標準 model。MCON_CLAUDE_CODE_MODEL または boot --model で上書きする。
+# Claude Code CLI バックエンドの標準モデル。MCON_CLAUDE_CODE_MODEL または boot --model で上書きする。
 DEFAULT_CLAUDE_CODE_MODEL = "claude-sonnet-4-6"
 
-# Claude Code CLI が読む API key 環境変数名。
+# Claude Code CLI が読む API キー環境変数名。
 ENV_ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY"
 
-# Claude Code CLI へ渡す model override の環境変数名。
+# Claude Code CLI へ渡す モデル上書き用環境変数名。
 ENV_CLAUDE_CODE_MODEL = "MCON_CLAUDE_CODE_MODEL"
 
-
+# 説明: このクラスの処理を提供する。
+# 引数: 定義された引数を使用する。
+# 返り値: クラスのインスタンス。
 class ClaudeCodeAdapter:
-    """Translate simple Anthropic Messages API calls to Claude Code CLI prompts."""
-
     backend_name = "claude-code"
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: なし。
     def __init__(self, credentials: dict[str, str] | None = None, default_model: str | None = None) -> None:
-        """Initialize the Claude Code adapter.
-
-        Args:
-            credentials: Optional credential values loaded from the vault.
-            default_model: Default Claude model id for Claude Code CLI.
-
-        Returns:
-            ``None``.
-        """
-
         self._credentials = credentials or {}
         self._default_model = default_model or DEFAULT_CLAUDE_CODE_MODEL
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def forward_json(
         self,
         request_headers: Any,
         request_payload: dict[str, Any],
         upstream_path: str = "/v1/messages",
     ) -> tuple[dict[str, Any], int]:
-        """Forward an Anthropic Messages request to Claude Code CLI.
-
-        Args:
-            request_headers: Incoming request headers.
-            request_payload: Anthropic-compatible JSON payload.
-            upstream_path: Anthropic-compatible upstream path.
-
-        Returns:
-            Tuple of Anthropic-compatible response payload and HTTP status code.
-        """
-
         if upstream_path == "/v1/messages/count_tokens":
             return {"input_tokens": len(_prompt_from_anthropic_request(request_payload).split())}, 200
         if upstream_path != "/v1/messages":
@@ -69,6 +55,9 @@ class ClaudeCodeAdapter:
         output = self._run_claude_prompt(prompt, request_payload)
         return _claude_text_to_anthropic_message(output, request_payload, started_at), 200
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def request_json(
         self,
         method: str,
@@ -76,18 +65,6 @@ class ClaudeCodeAdapter:
         upstream_path: str,
         request_payload: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int]:
-        """Handle model and token-count endpoints for Claude Code.
-
-        Args:
-            method: HTTP method.
-            request_headers: Incoming request headers.
-            upstream_path: Anthropic-compatible upstream path.
-            request_payload: Optional JSON payload.
-
-        Returns:
-            Tuple of response payload and HTTP status code.
-        """
-
         if upstream_path.startswith("/v1/models"):
             requested_model = _requested_model_from_path(upstream_path)
             if requested_model:
@@ -97,6 +74,9 @@ class ClaudeCodeAdapter:
             return {"input_tokens": len(_prompt_from_anthropic_request(request_payload).split())}, 200
         raise AdapterError(501, "not_supported", f"Claude Code adapter does not implement {upstream_path}")
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def request_raw(
         self,
         method: str,
@@ -104,18 +84,6 @@ class ClaudeCodeAdapter:
         upstream_path: str,
         request_payload: dict[str, Any] | None = None,
     ) -> RawAdapterResponse:
-        """Return a raw JSON response for compatible endpoints.
-
-        Args:
-            method: HTTP method.
-            request_headers: Incoming request headers.
-            upstream_path: Anthropic-compatible upstream path.
-            request_payload: Optional JSON payload.
-
-        Returns:
-            Raw response metadata and body bytes.
-        """
-
         response_payload, status_code = self.request_json(method, request_headers, upstream_path, request_payload)
         return RawAdapterResponse(
             status_code=status_code,
@@ -123,6 +91,9 @@ class ClaudeCodeAdapter:
             body=json.dumps(response_payload, separators=(",", ":")).encode("utf-8"),
         )
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def request_raw_body(
         self,
         method: str,
@@ -130,37 +101,17 @@ class ClaudeCodeAdapter:
         upstream_path: str,
         body: bytes | None,
     ) -> RawAdapterResponse:
-        """Reject raw body requests because this adapter only runs prompt calls.
-
-        Args:
-            method: HTTP method.
-            request_headers: Incoming request headers.
-            upstream_path: Requested upstream path.
-            body: Raw request body.
-
-        Returns:
-            Never returns; raises ``AdapterError``.
-        """
-
         raise AdapterError(501, "not_supported", f"Claude Code adapter does not implement raw body endpoint {upstream_path}")
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def open_stream(
         self,
         request_headers: Any,
         request_payload: dict[str, Any],
         upstream_path: str = "/v1/messages",
     ) -> SyntheticStreamResponse:
-        """Convert a non-streaming Claude Code response into synthetic SSE.
-
-        Args:
-            request_headers: Incoming request headers.
-            request_payload: Anthropic-compatible JSON payload.
-            upstream_path: Anthropic-compatible upstream path.
-
-        Returns:
-            File-like synthetic SSE response.
-        """
-
         payload_without_stream = dict(request_payload)
         payload_without_stream["stream"] = False
         response_payload, status_code = self.forward_json(request_headers, payload_without_stream, upstream_path)
@@ -170,17 +121,10 @@ class ClaudeCodeAdapter:
             body=_anthropic_message_to_sse(response_payload),
         )
 
+    # 説明: この関数の処理を行う。
+    # 引数: 定義された引数を使用する。
+    # 返り値: 型注釈に従う値を返す。
     def _run_claude_prompt(self, prompt: str, request_payload: dict[str, Any]) -> str:
-        """Run Claude Code CLI for one prompt.
-
-        Args:
-            prompt: Prompt text to pass to Claude Code CLI.
-            request_payload: Original request payload, reserved for future options.
-
-        Returns:
-            Final assistant text from Claude Code CLI.
-        """
-
         model = os.environ.get(ENV_CLAUDE_CODE_MODEL) or self._default_model
         command = ["claude", "-p", prompt, "--model", model, "--output-format", "text"]
         environment = dict(os.environ)
@@ -193,17 +137,10 @@ class ClaudeCodeAdapter:
             raise AdapterError(502, "upstream_error", message)
         return completed_process.stdout.strip()
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _prompt_from_anthropic_request(request_payload: dict[str, Any]) -> str:
-    """Build plain prompt text from an Anthropic request.
-
-    Args:
-        request_payload: Anthropic-compatible JSON payload.
-
-    Returns:
-        Prompt text for Claude Code CLI.
-    """
-
     parts: list[str] = []
     system = request_payload.get("system")
     if system:
@@ -215,17 +152,10 @@ def _prompt_from_anthropic_request(request_payload: dict[str, Any]) -> str:
             parts.append(f"{role.title()}:\n{text}")
     return "\n\n".join(parts).strip()
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _content_to_text(content: Any) -> str:
-    """Convert Anthropic content blocks to plain text.
-
-    Args:
-        content: String or list of Anthropic content blocks.
-
-    Returns:
-        Plain text representation.
-    """
-
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -238,19 +168,10 @@ def _content_to_text(content: Any) -> str:
         return "\n".join(part for part in text_parts if part)
     return str(content)
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _claude_text_to_anthropic_message(output: str, request_payload: dict[str, Any], started_at: float) -> dict[str, Any]:
-    """Wrap Claude Code CLI text as an Anthropic message.
-
-    Args:
-        output: Claude Code CLI output text.
-        request_payload: Original Anthropic-compatible request payload.
-        started_at: Request start timestamp.
-
-    Returns:
-        Anthropic-compatible message payload.
-    """
-
     input_tokens = len(_prompt_from_anthropic_request(request_payload).split())
     output_tokens = len(output.split())
     return {
@@ -264,17 +185,10 @@ def _claude_text_to_anthropic_message(output: str, request_payload: dict[str, An
         "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
     }
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _claude_models(model_id: str | None = None) -> dict[str, Any]:
-    """Build Anthropic-shaped Claude Code model list.
-
-    Args:
-        model_id: Optional selected model id.
-
-    Returns:
-        Anthropic-compatible models payload.
-    """
-
     resolved_model_id = model_id or os.environ.get(ENV_CLAUDE_CODE_MODEL, DEFAULT_CLAUDE_CODE_MODEL)
     models = [_anthropic_model(resolved_model_id)]
     return {
@@ -284,30 +198,16 @@ def _claude_models(model_id: str | None = None) -> dict[str, Any]:
         "last_id": models[-1]["id"],
     }
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _anthropic_model(model_id: str) -> dict[str, Any]:
-    """Build one Anthropic-shaped model item.
-
-    Args:
-        model_id: Model identifier.
-
-    Returns:
-        Anthropic-compatible model item.
-    """
-
     return {"id": model_id, "type": "model", "display_name": model_id, "created_at": None}
 
-
+# 説明: この関数の処理を行う。
+# 引数: 定義された引数を使用する。
+# 返り値: 型注釈に従う値を返す。
 def _requested_model_from_path(upstream_path: str) -> str:
-    """Extract a model id from a models endpoint path.
-
-    Args:
-        upstream_path: Requested upstream path.
-
-    Returns:
-        Decoded model id, or an empty string.
-    """
-
     import urllib.parse
 
     path = urllib.parse.urlsplit(upstream_path).path
@@ -315,7 +215,6 @@ def _requested_model_from_path(upstream_path: str) -> str:
     if not path.startswith(prefix):
         return ""
     return urllib.parse.unquote(path[len(prefix) :])
-
 
 ADAPTER_SPEC = {
     "name": "claude-code",
