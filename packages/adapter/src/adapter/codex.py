@@ -17,9 +17,6 @@ from .anthropic import AdapterError, RawAdapterResponse
 # Codex CLI の標準モデル。MCON_CODEX_MODEL または boot --model で上書きする。
 DEFAULT_CODEX_MODEL = "gpt-5.3-codex"
 
-# Claude Code 互換用に モデル API へ見せる仮モデル名。
-CLAUDE_PROXY_MODEL = "claude-sonnet-4-6"
-
 # Codex/OpenAI 認証に使う API キー環境変数名。
 ENV_OPENAI_API_KEY = "OPENAI_API_KEY"
 
@@ -182,11 +179,12 @@ class CodexAdapter:
         if method != "GET":
             raise AdapterError(405, "method_not_allowed", "Models API only supports GET")
         requested_model = _requested_model_from_path(upstream_path)
+        resolved_model_id = os.environ.get(ENV_CODEX_MODEL) or self._default_model
         if requested_model:
-            if requested_model.startswith("claude-"):
-                return _anthropic_model(requested_model), 200
-            return _anthropic_model(os.environ.get(ENV_CODEX_MODEL) or self._default_model), 200
-        return _codex_models(os.environ.get(ENV_CODEX_MODEL) or self._default_model), 200
+            if requested_model != resolved_model_id:
+                raise AdapterError(404, "not_found", f"Codex backend model is not available: {requested_model}")
+            return _anthropic_model(resolved_model_id), 200
+        return _codex_models(resolved_model_id), 200
 
     # 説明: リクエストペイロード の概算 input token 数 を返す。
     # 引数: request_payload は Anthropic 互換 JSON ボディ。
@@ -411,9 +409,7 @@ def _codex_text_to_anthropic_message(output: str, request_payload: dict[str, Any
 # 返り値: Anthropic 形状の model list ペイロード。
 def _codex_models(model_id: str | None = None) -> dict[str, Any]:
     resolved_model_id = model_id or os.environ.get(ENV_CODEX_MODEL, DEFAULT_CODEX_MODEL)
-    models = [_anthropic_model(CLAUDE_PROXY_MODEL)]
-    if resolved_model_id != CLAUDE_PROXY_MODEL:
-        models.append(_anthropic_model(resolved_model_id))
+    models = [_anthropic_model(resolved_model_id)]
     return {
         "data": models,
         "has_more": False,
@@ -540,8 +536,8 @@ def _sse_event(event_name: str, payload: dict[str, Any]) -> bytes:
 # 引数: response_payload はバックエンドから返った JSON ペイロード。
 # 返り値: Anthropic model list 形状の JSON ペイロード。
 def _openai_models_to_anthropic_models(response_payload: dict[str, Any]) -> dict[str, Any]:
-    models = [_anthropic_model(CLAUDE_PROXY_MODEL)]
-    seen = {CLAUDE_PROXY_MODEL}
+    models = []
+    seen: set[str] = set()
     for model in response_payload.get("data", []):
         model_id = model.get("id", "")
         if model_id and model_id not in seen:

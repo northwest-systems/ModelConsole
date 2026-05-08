@@ -3,7 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from adapter import ClaudeCodeAdapter, NvidiaNimAdapter, build_adapter, get_adapter_specs
+from adapter import AdapterError, ClaudeCodeAdapter, CodexAdapter, CopilotAdapter, NvidiaNimAdapter, build_adapter, get_adapter_specs
+from adapter.nvidia import _openai_models_to_anthropic_models
 
 
 class AdapterFactoryTests(unittest.TestCase):
@@ -43,6 +44,44 @@ class AdapterFactoryTests(unittest.TestCase):
         self.assertIn("--model", command)
         self.assertEqual(status_code, 200)
         self.assertEqual(response_payload["content"][0]["text"], "hello")
+
+    # 説明: Codex backend の model list が Codex 用モデルだけを返すことを検証する。
+    # 引数: なし。
+    # 返り値: なし。
+    def test_codex_models_do_not_include_claude_proxy_model(self) -> None:
+        with patch.dict("os.environ", {"MCON_CODEX_MODEL": ""}):
+            response_payload, status_code = CodexAdapter(default_model="gpt-5.3-codex").request_json("GET", {}, "/v1/models")
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual([model["id"] for model in response_payload["data"]], ["gpt-5.3-codex"])
+
+    # 説明: Codex backend が未設定の Claude model を自 backend の model として返さないことを検証する。
+    # 引数: なし。
+    # 返り値: なし。
+    def test_codex_rejects_unavailable_claude_model_lookup(self) -> None:
+        with patch.dict("os.environ", {"MCON_CODEX_MODEL": ""}):
+            with self.assertRaises(AdapterError) as error_context:
+                CodexAdapter(default_model="gpt-5.3-codex").request_json("GET", {}, "/v1/models/claude-sonnet-4-6")
+
+        self.assertEqual(error_context.exception.status_code, 404)
+
+    # 説明: Copilot backend の model list が Copilot 用モデルだけを返すことを検証する。
+    # 引数: なし。
+    # 返り値: なし。
+    def test_copilot_models_do_not_include_claude_proxy_model(self) -> None:
+        with patch.dict("os.environ", {"MCON_COPILOT_MODEL": ""}):
+            response_payload, status_code = CopilotAdapter(default_model="gpt-5.3-codex").request_json("GET", {}, "/v1/models")
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual([model["id"] for model in response_payload["data"]], ["gpt-5.3-codex"])
+
+    # 説明: NVIDIA model list 変換が上流から返った model だけを返すことを検証する。
+    # 引数: なし。
+    # 返り値: なし。
+    def test_nvidia_models_do_not_include_claude_proxy_model(self) -> None:
+        response_payload = _openai_models_to_anthropic_models({"data": [{"id": "nvidia/test-model"}]})
+
+        self.assertEqual([model["id"] for model in response_payload["data"]], ["nvidia/test-model"])
 
 
 if __name__ == "__main__":

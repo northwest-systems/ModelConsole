@@ -16,9 +16,6 @@ from .codex import SyntheticStreamResponse, _anthropic_message_to_sse
 # GitHub Copilot CLI バックエンドの標準モデル。
 DEFAULT_COPILOT_MODEL = "gpt-5.3-codex"
 
-# Claude Code 互換用に モデル API へ見せる仮モデル名。
-CLAUDE_PROXY_MODEL = "claude-sonnet-4-6"
-
 # Copilot CLI へ渡す モデル上書き用環境変数名。
 ENV_COPILOT_MODEL = "MCON_COPILOT_MODEL"
 
@@ -83,11 +80,12 @@ class CopilotAdapter:
     ) -> tuple[dict[str, Any], int]:
         if upstream_path.startswith("/v1/models"):
             requested_model = _requested_model_from_path(upstream_path)
+            resolved_model_id = os.environ.get(ENV_COPILOT_MODEL) or self._default_model
             if requested_model:
-                if requested_model.startswith("claude-"):
-                    return _copilot_model(requested_model), 200
-                return _copilot_model(os.environ.get(ENV_COPILOT_MODEL) or self._default_model), 200
-            return _copilot_models(os.environ.get(ENV_COPILOT_MODEL) or self._default_model), 200
+                if requested_model != resolved_model_id:
+                    raise AdapterError(404, "not_found", f"Copilot backend model is not available: {requested_model}")
+                return _copilot_model(resolved_model_id), 200
+            return _copilot_models(resolved_model_id), 200
         if upstream_path == "/v1/messages/count_tokens" and request_payload is not None:
             return {"input_tokens": len(_prompt_from_anthropic_request(request_payload).split())}, 200
         raise AdapterError(501, "not_supported", f"Copilot adapter does not implement {upstream_path}")
@@ -220,9 +218,7 @@ def _copilot_text_to_anthropic_message(output: str, request_payload: dict[str, A
 # 返り値: Anthropic 形状の model list ペイロード。
 def _copilot_models(model_id: str | None = None) -> dict[str, Any]:
     resolved_model_id = model_id or os.environ.get(ENV_COPILOT_MODEL, DEFAULT_COPILOT_MODEL)
-    models = [_copilot_model(CLAUDE_PROXY_MODEL)]
-    if resolved_model_id != CLAUDE_PROXY_MODEL:
-        models.append(_copilot_model(resolved_model_id))
+    models = [_copilot_model(resolved_model_id)]
     return {
         "data": models,
         "has_more": False,

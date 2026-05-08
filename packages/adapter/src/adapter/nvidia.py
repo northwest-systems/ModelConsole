@@ -18,9 +18,6 @@ DEFAULT_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com"
 # NVIDIA バックエンドの標準モデル。MCON_NVIDIA_MODEL または boot --model で上書きする。
 DEFAULT_NVIDIA_MODEL = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
 
-# Claude Code 互換用に モデル API へ見せる仮モデル名。
-CLAUDE_PROXY_MODEL = "claude-sonnet-4-6"
-
 # NVIDIA NIM API キーを読む環境変数名。
 ENV_NVIDIA_API_KEY = "NVIDIA_API_KEY"
 
@@ -151,8 +148,6 @@ class NvidiaNimAdapter:
         if method != "GET":
             raise AdapterError(405, "method_not_allowed", "Models API only supports GET")
         requested_model = _requested_model_from_path(upstream_path)
-        if requested_model and requested_model.startswith("claude-"):
-            return _anthropic_model(requested_model), 200
         raw_response = self._request_nvidia_json("GET", upstream_path)
         response_payload = json.loads(raw_response.body.decode("utf-8"))
         if requested_model:
@@ -439,8 +434,8 @@ def _finish_reason_to_stop_reason(finish_reason: Any, content: list[dict[str, An
 # 引数: response_payload はバックエンドから返った JSON ペイロード。
 # 返り値: Anthropic model list 形状の JSON ペイロード。
 def _openai_models_to_anthropic_models(response_payload: dict[str, Any]) -> dict[str, Any]:
-    models = [_anthropic_model(CLAUDE_PROXY_MODEL)]
-    seen = {CLAUDE_PROXY_MODEL}
+    models = []
+    seen: set[str] = set()
     for model in response_payload.get("data", []):
         model_id = model.get("id", "")
         if model_id and model_id not in seen:
