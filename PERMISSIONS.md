@@ -422,6 +422,16 @@ input: "latest Node.js LTS"
 4. server が tool.inherit を確認する
 5. inherit = none の場合は tool の解決済みポリシーで実行する
 6. inherit = caller の場合は agent と tool の解決済みポリシーの共通部分で実行する
+7. server が final policy を持つ tool runtime を起動する
+8. tool runtime が command を実行する場合、command 実行依頼を server に送る
+9. server が final policy で command を実行ファイルへ解決する
+10. server が argv を解析する
+11. server が final policy の command permission を評価する
+12. server が最後に match した action を採用する
+13. action が ask の場合は user approval を取得する
+14. server が command.uses の credential を解決する
+15. server が credential を env overlay に変換する
+16. server が execve で command を実行する
 ```
 
 共通部分とは、caller と tool の両方で許可されている範囲である。
@@ -435,7 +445,16 @@ user が tool を直接実行する時、server は tool の policy だけを使
 ```text
 1. user が tool 実行依頼を server に送る
 2. server が tool の uses を解決する
-3. server が tool の解決済みポリシーで tool を実行する
+3. server が tool の解決済みポリシーを final policy として tool runtime を起動する
+4. tool runtime が command を実行する場合、command 実行依頼を server に送る
+5. server が final policy で command を実行ファイルへ解決する
+6. server が argv を解析する
+7. server が final policy の command permission を評価する
+8. server が最後に match した action を採用する
+9. action が ask の場合は user approval を取得する
+10. server が command.uses の credential を解決する
+11. server が credential を env overlay に変換する
+12. server が execve で command を実行する
 ```
 
 ### Websearch Example
