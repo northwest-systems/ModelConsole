@@ -1,0 +1,12 @@
+[plugin]
+name = "mcon"
+description = "Built-in mcon MVP plugin."
+
+include = [
+  "policies/workspace.toml",
+  "policies/workspace-readonly.toml",
+  "policies/git.toml",
+  "agents/coder.toml",
+  "agents/auditor.toml",
+  "tools/edit.toml",
+]

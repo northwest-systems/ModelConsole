@@ -1,0 +1,25 @@
+[policy.workspace]
+description = "Workspace file permissions for the MVP sandbox."
+
+[policy.workspace.files.workspace-read]
+description = "Read the workspace by default."
+action = "read"
+paths = ["/workspace"]
+
+[policy.workspace.files.generated-write]
+description = "Create new generated files through the session outbox."
+action = "write"
+paths = ["/workspace/generated"]
+
+[policy.workspace.files.docs-edit]
+description = "Edit project documentation."
+action = "edit"
+paths = ["/workspace/docs"]
+
+[policy.workspace.files.secret-deny]
+description = "Hide local secret material."
+action = "deny"
+paths = [
+  "/workspace/.env",
+  "/workspace/secrets",
+]

@@ -1,0 +1,36 @@
+services:
+  mcon:
+    build:
+      context: .
+      target: runtime
+    image: modelconsole/mcon:dev
+    command:
+      - uv
+      - run
+      - --no-project
+      - python
+      - -m
+      - mcon
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8765"
+    environment:
+      CODEX_HOME: /mcon/codex-home
+      MCON_WORKSPACE: /workspace
+      MCON_SESSION_ROOT: /mcon/session-fs
+      PYTHONPATH: /app/packages/mcon/src
+      UV_CACHE_DIR: /tmp/uv-cache
+      UV_NO_PROGRESS: "1"
+    ports:
+      - "8765:8765"
+    volumes:
+      - .:/workspace:rw
+      - codex-home:/mcon/codex-home
+    # MVP development mode. Later phases should replace privileged with a
+    # narrower capability set for mount namespace and network namespace setup.
+    privileged: true
+
+volumes:
+  codex-home:

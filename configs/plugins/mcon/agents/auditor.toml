@@ -1,0 +1,5 @@
+[agent.auditor]
+description = "Read-only review agent."
+uses = [
+  "workspace-readonly",
+]

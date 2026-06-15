@@ -1,0 +1,12 @@
+[project]
+name = "model-console"
+version = "0.1.0"
+description = "Policy-managed model console sandbox."
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.mcon]
+default_plugin_root = "configs/plugins/mcon"

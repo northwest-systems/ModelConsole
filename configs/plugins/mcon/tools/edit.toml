@@ -1,0 +1,6 @@
+[tool.edit]
+description = "Direct workspace editor."
+inherit = "caller"
+uses = [
+  "workspace",
+]
