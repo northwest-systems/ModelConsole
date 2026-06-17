@@ -6,7 +6,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "mcon" / "src"))
 
-from mcon.server.app import _agent_scoped_session_id
+from mcon.policy import PolicyManager
+from mcon.server.app import _agent_scoped_session_id, _chat_id, _policy_context, _prompt_from_messages, _required_messages
 
 
 class ServerTests(unittest.TestCase):
@@ -17,6 +18,46 @@ class ServerTests(unittest.TestCase):
         self.assertNotEqual(coder, auditor)
         self.assertEqual(coder, "mcon_agent_coder--session-1")
         self.assertEqual(auditor, "mcon_agent_auditor--session-1")
+
+    def test_required_messages_replaces_unpaired_surrogates(self) -> None:
+        messages = _required_messages({"messages": [{"role": "user", "content": "bad\udcfftext"}]})
+
+        self.assertEqual(messages, [{"role": "user", "content": "bad\ufffdtext"}])
+        messages[0]["content"].encode("utf-8")
+
+    def test_required_messages_preserves_chat_id(self) -> None:
+        messages = _required_messages({"messages": [{"role": "user", "content": "hello", "chat_id": "#01234"}]})
+
+        self.assertEqual(messages, [{"role": "user", "content": "hello", "chat_id": "#01234"}])
+
+    def test_required_messages_rejects_invalid_chat_id(self) -> None:
+        with self.assertRaises(ValueError):
+            _required_messages({"messages": [{"role": "user", "content": "hello", "chat_id": "bad\nid"}]})
+
+    def test_prompt_includes_chat_id_and_policy_context(self) -> None:
+        prompt = _prompt_from_messages(
+            [{"role": "user", "content": "hello", "chat_id": "#01234"}],
+            chat_id="#01234",
+            policy_context="subject: mcon.agent.coder",
+        )
+
+        self.assertIn("Current chat id: #01234", prompt)
+        self.assertIn("Reply to the latest USER message for #01234.", prompt)
+        self.assertIn("ModelConsole policy context:", prompt)
+        self.assertIn("USER #01234: hello", prompt)
+
+    def test_chat_id_uses_payload_or_last_message(self) -> None:
+        self.assertEqual(_chat_id({"chat_id": "#99999"}, []), "#99999")
+        self.assertEqual(_chat_id({}, [{"role": "user", "content": "hello", "chat_id": "#01234"}]), "#01234")
+
+    def test_policy_context_describes_resolved_policy(self) -> None:
+        manager = PolicyManager.load(Path("configs/plugins/mcon"))
+        context = _policy_context(manager.resolve_subject("mcon.agent.coder"), cwd=Path("/workspace"), sandbox="read-only")
+
+        self.assertIn("subject: mcon.agent.coder", context)
+        self.assertIn("command_policy: last matching permission wins", context)
+        self.assertIn("mcon.policy.git.commands.git-push: action=ask", context)
+        self.assertIn("file_actions: deny=no access; read=stat/list/read; write=create only; edit=stat/list/read/create/write.", context)
 
 
 if __name__ == "__main__":

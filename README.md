@@ -90,6 +90,36 @@ docker compose exec mcon \
 
 `codex-home` volume には access token が保存されるため、export したり commit したりしない。
 
+### TUI
+
+TUI は server を起動した状態で別 terminal から入る。
+
+```sh
+docker compose exec mcon \
+  uv run --no-project python -m mcon tui --server http://127.0.0.1:8765
+```
+
+通常入力は mcon の orchestration chat stream に送る。TUI は各 user message に `#01234` 形式の chat id を付け、応答待ち中も次の入力を受け付ける。server の `/api/chat/stream` は provider、chat id、解決済みの mcon policy context を使って実行先を決める。現時点の provider は `codex` のみで、内部では `codex exec --json --sandbox read-only` を NDJSON として中継する。
+
+TUI commands:
+
+```text
+! git status              # explain command policy
+/exec git status --short  # run through mcon executor policy/sandbox
+/provider codex
+/subject mcon.agent.auditor
+/cwd /workspace/some-repo
+/session session-a
+/sandbox read-only
+/clear
+/status
+/quit
+```
+
+TTY では入力行の Backspace、Delete、Ctrl-U、Ctrl-W、Ctrl-A/Ctrl-E、左右矢印、Home/End を扱う。応答が割り込んだ場合も入力中の行を再描画する。
+
+`/sandbox workspace-write` も指定できるが、現時点では Codex CLI 自身の sandbox 指定であり、Codex の内部 tool 実行を mcon executor に完全転送するものではない。通常は `read-only` のまま使う。
+
 Container 内の health check:
 
 ```sh

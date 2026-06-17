@@ -8,6 +8,8 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
+from mcon.text import utf8_safe
+
 
 DEFAULT_CODEX_HOME = Path("/mcon/codex-home")
 DEFAULT_WORKSPACE = Path("/workspace")
@@ -27,6 +29,38 @@ def run_exec(prompt: str, *, workspace: Path | None = None, json_stream: bool = 
         command.append("--json")
     command.append(prompt)
     return _run_passthrough(command, cwd=workspace or _workspace_path())
+
+
+def popen_exec_stream(prompt: str, *, workspace: Path, sandbox: str = "read-only") -> subprocess.Popen[str]:
+    """Start `codex exec --json` and stream events through stdout/stderr."""
+
+    command = [
+        "codex",
+        "exec",
+        "--json",
+        "--sandbox",
+        sandbox,
+        "--cd",
+        str(workspace),
+        "-",
+    ]
+    process = subprocess.Popen(
+        command,
+        cwd=workspace,
+        env=codex_environment(os.environ.items()),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdin is not None
+    try:
+        process.stdin.write(utf8_safe(prompt))
+        process.stdin.close()
+    except BrokenPipeError:
+        pass
+    return process
 
 
 def _run_passthrough(command: list[str], *, cwd: Path | None = None) -> int:
