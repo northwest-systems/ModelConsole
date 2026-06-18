@@ -118,7 +118,7 @@ TUI commands:
 
 TTY では入力行の Backspace、Delete、Ctrl-U、Ctrl-W、Ctrl-A/Ctrl-E、左右矢印、Home/End を扱う。応答が割り込んだ場合も入力中の行を再描画する。
 
-`/sandbox workspace-write` も指定できるが、現時点では Codex CLI 自身の sandbox 指定であり、Codex の内部 tool 実行を mcon executor に完全転送するものではない。通常は `read-only` のまま使う。
+`/sandbox workspace-write` は、Codex の内部 tool 実行を mcon executor に完全転送できるまで chat stream では拒否される。通常は `read-only` のまま使う。workspace への変更が必要な command は `/exec` で mcon executor policy/sandbox を通して実行する。
 
 Container 内の health check:
 

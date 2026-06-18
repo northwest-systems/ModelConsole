@@ -53,7 +53,9 @@ def popen_exec_stream(prompt: str, *, workspace: Path, sandbox: str = "read-only
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
+        start_new_session=True,
     )
+    process._mcon_process_group = process.pid  # type: ignore[attr-defined]
     assert process.stdin is not None
     try:
         process.stdin.write(utf8_safe(prompt))

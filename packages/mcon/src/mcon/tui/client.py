@@ -32,6 +32,7 @@ class TuiState:
     sandbox: str = "read-only"
     messages: list[dict[str, str]] = field(default_factory=list)
     active_chat_ids: set[str] = field(default_factory=set)
+    pending_chats: list[dict[str, str]] = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
     output_lock: threading.RLock = field(default_factory=threading.RLock)
     input_prompt: str = "you> "
@@ -224,13 +225,18 @@ def _handle_command(state: TuiState, line: str) -> None:
     parts = shlex.split(line)
     command = parts[0]
     args = parts[1:]
+    session_setting_commands = {"/clear", "/subject", "/provider", "/cwd", "/session", "/sandbox"}
+    if command in session_setting_commands and _session_busy(state):
+        print("cannot change session settings while chat messages are active or pending")
+        return
     if command == "/help":
         _print_help()
     elif command == "/status":
         with state.lock:
             active = ",".join(sorted(state.active_chat_ids)) or "none"
             message_count = len(state.messages)
-        print(f"provider={state.provider} subject={state.subject} cwd={state.cwd} session={state.session_id} sandbox={state.sandbox} messages={message_count} active={active}")
+            pending_count = len(state.pending_chats)
+        print(f"provider={state.provider} subject={state.subject} cwd={state.cwd} session={state.session_id} sandbox={state.sandbox} messages={message_count} active={active} pending={pending_count}")
     elif command == "/clear":
         state.messages.clear()
         print("history cleared")
@@ -247,13 +253,20 @@ def _handle_command(state: TuiState, line: str) -> None:
         state.session_id = args[0]
         state.messages.clear()
         print(f"session={state.session_id}")
-    elif command == "/sandbox" and len(args) == 1 and args[0] in {"read-only", "workspace-write"}:
-        state.sandbox = args[0]
+    elif command == "/sandbox" and args == ["read-only"]:
+        state.sandbox = "read-only"
         print(f"sandbox={state.sandbox}")
+    elif command == "/sandbox" and args == ["workspace-write"]:
+        print("workspace-write is disabled until provider tools are enforced by mcon executor")
     elif command == "/exec" and args:
         _exec_command(state, args)
     else:
         print("unknown command; use /help")
+
+
+def _session_busy(state: TuiState) -> bool:
+    with state.lock:
+        return bool(state.active_chat_ids or state.pending_chats)
 
 
 def _chat(state: TuiState, text: str) -> None:
@@ -261,19 +274,30 @@ def _chat(state: TuiState, text: str) -> None:
     chat_id = _new_chat_id()
     user_message = {"role": "user", "content": text, "chat_id": chat_id}
     with state.lock:
-        state.messages.append(user_message)
-        state.active_chat_ids.add(chat_id)
-        messages = list(state.messages)
-    payload = {
-        "chat_id": chat_id,
-        "provider": state.provider,
-        "subject": state.subject,
-        "cwd": state.cwd,
-        "session_id": state.session_id,
-        "sandbox": state.sandbox,
-        "messages": messages,
-    }
+        should_start = not state.active_chat_ids
+        if should_start:
+            state.messages.append(user_message)
+            state.active_chat_ids.add(chat_id)
+        else:
+            state.pending_chats.append(user_message)
     _print_line(state, f"queued {chat_id}")
+    if should_start:
+        _start_chat_worker(state, user_message)
+
+
+def _start_chat_worker(state: TuiState, user_message: dict[str, str]) -> None:
+    chat_id = user_message["chat_id"]
+    with state.lock:
+        messages = list(state.messages)
+        payload = {
+            "chat_id": chat_id,
+            "provider": state.provider,
+            "subject": state.subject,
+            "cwd": state.cwd,
+            "session_id": state.session_id,
+            "sandbox": state.sandbox,
+            "messages": messages,
+        }
     thread = threading.Thread(target=_chat_worker, args=(state, chat_id, user_message, payload), daemon=True)
     thread.start()
 
@@ -302,7 +326,10 @@ def _chat_worker(state: TuiState, chat_id: str, user_message: dict[str, str], pa
             if user_message in state.messages:
                 state.messages.remove(user_message)
             state.active_chat_ids.discard(chat_id)
+            next_message = _pop_next_chat_locked(state)
         _print_line(state, f"{chat_id} error: {error}")
+        if next_message:
+            _start_chat_worker(state, next_message)
         return
     if started_output:
         _finish_output_stream(state)
@@ -311,6 +338,18 @@ def _chat_worker(state: TuiState, chat_id: str, user_message: dict[str, str], pa
         if assistant:
             state.messages.append({"role": "assistant", "content": assistant, "chat_id": chat_id})
         state.active_chat_ids.discard(chat_id)
+        next_message = _pop_next_chat_locked(state)
+    if next_message:
+        _start_chat_worker(state, next_message)
+
+
+def _pop_next_chat_locked(state: TuiState) -> dict[str, str] | None:
+    if not state.pending_chats:
+        return None
+    next_message = state.pending_chats.pop(0)
+    state.messages.append(next_message)
+    state.active_chat_ids.add(next_message["chat_id"])
+    return next_message
 
 
 def _new_chat_id() -> str:
@@ -403,6 +442,8 @@ def _post(server_url: str, path: str, payload: dict[str, object]) -> dict[str, o
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8")
         raise RuntimeError(body) from error
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, UnicodeError) as error:
+        raise RuntimeError(str(error)) from error
     if not isinstance(decoded, dict):
         raise RuntimeError("server returned non-object JSON")
     return decoded
@@ -427,6 +468,8 @@ def _post_stream(server_url: str, path: str, payload: dict[str, object]) -> Iter
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8")
         raise RuntimeError(body) from error
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, UnicodeError) as error:
+        raise RuntimeError(str(error)) from error
 
 
 def _event_text(event: dict[str, Any]) -> str | None:

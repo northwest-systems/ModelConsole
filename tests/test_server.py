@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import signal
 import sys
+import subprocess
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "mcon" / "src"))
 
 from mcon.policy import PolicyManager
-from mcon.server.app import _agent_scoped_session_id, _chat_id, _policy_context, _prompt_from_messages, _required_messages
+from mcon.server.app import (
+    _agent_scoped_session_id,
+    _chat_id,
+    _chat_sandbox,
+    _policy_context,
+    _prompt_from_messages,
+    _required_messages,
+    _stream_process_as_ndjson,
+    _terminate_process_group,
+)
 
 
 class ServerTests(unittest.TestCase):
@@ -50,6 +62,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(_chat_id({"chat_id": "#99999"}, []), "#99999")
         self.assertEqual(_chat_id({}, [{"role": "user", "content": "hello", "chat_id": "#01234"}]), "#01234")
 
+    def test_chat_sandbox_rejects_workspace_write(self) -> None:
+        with self.assertRaises(ValueError):
+            _chat_sandbox({"sandbox": "workspace-write"})
+
     def test_policy_context_describes_resolved_policy(self) -> None:
         manager = PolicyManager.load(Path("configs/plugins/mcon"))
         context = _policy_context(manager.resolve_subject("mcon.agent.coder"), cwd=Path("/workspace"), sandbox="read-only")
@@ -58,6 +74,49 @@ class ServerTests(unittest.TestCase):
         self.assertIn("command_policy: last matching permission wins", context)
         self.assertIn("mcon.policy.git.commands.git-push: action=ask", context)
         self.assertIn("file_actions: deny=no access; read=stat/list/read; write=create only; edit=stat/list/read/create/write.", context)
+
+    def test_stream_process_terminates_on_write_failure(self) -> None:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import json, time; print(json.dumps({'type': 'agent_message_delta', 'delta': 'x'}), flush=True); time.sleep(30)",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        process._mcon_process_group = process.pid  # type: ignore[attr-defined]
+
+        def fail_write(_event: object) -> None:
+            raise BrokenPipeError("client disconnected")
+
+        try:
+            with self.assertRaises(BrokenPipeError):
+                _stream_process_as_ndjson(process, fail_write)
+        finally:
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+
+        self.assertIsNotNone(process.poll())
+
+    def test_terminate_process_group_kills_surviving_children(self) -> None:
+        process = unittest.mock.MagicMock()
+        process.poll.side_effect = [None, 0, 0]
+
+        with unittest.mock.patch("mcon.server.app.os.killpg") as killpg:
+            _terminate_process_group(process, 1234)
+
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                unittest.mock.call(1234, signal.SIGTERM),
+                unittest.mock.call(1234, signal.SIGKILL),
+            ],
+        )
 
 
 if __name__ == "__main__":

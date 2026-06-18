@@ -80,6 +80,9 @@ func TestBuildCommandWrapsSandboxedCommandWithBubblewrap(t *testing.T) {
 			t.Fatalf("bubblewrap args missing %q in %q", expected, joined)
 		}
 	}
+	if strings.Contains(joined, "--ro-bind /etc /etc") {
+		t.Fatalf("bubblewrap args should not expose host /etc: %q", joined)
+	}
 }
 
 func TestBuildCommandRejectsCwdOutsideWorkspace(t *testing.T) {
@@ -95,6 +98,29 @@ func TestBuildCommandRejectsCwdOutsideWorkspace(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("buildCommand returned nil error for cwd outside workspace")
+	}
+}
+
+func TestBuildCommandDoesNotFailOpenWhenFileRulesAreEmpty(t *testing.T) {
+	workspace := t.TempDir()
+
+	command, err := buildCommand(
+		ExecSpec{
+			Argv: []string{"/bin/true"},
+			Cwd:  workspace,
+			Sandbox: SandboxSpec{
+				Enabled:   true,
+				Workspace: workspace,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("buildCommand returned error: %v", err)
+	}
+
+	joined := strings.Join(command.Args, " ")
+	if strings.Contains(joined, "--bind-try "+workspace+" "+workspace) {
+		t.Fatalf("empty file rules should not grant workspace edit: %q", joined)
 	}
 }
 

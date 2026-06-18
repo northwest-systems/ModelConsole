@@ -64,6 +64,49 @@ class PolicyManagerTests(unittest.TestCase):
             ],
         )
 
+    def test_command_file_arguments_block_git_diff_no_index_outside_policy(self) -> None:
+        manager = PolicyManager.load(Path("configs/plugins/mcon"))
+
+        decision = manager.explain_command_file_arguments(
+            "mcon.agent.coder",
+            ["git", "diff", "--no-index", "/etc/passwd", "/workspace/README.md"],
+            cwd="/workspace",
+        )
+
+        self.assertFalse(decision["allowed"])
+        self.assertEqual(decision["violations"][0]["path"], "/etc/passwd")
+
+    def test_file_policy_normalizes_parent_segments_before_matching(self) -> None:
+        manager = PolicyManager.load(Path("configs/plugins/mcon"))
+
+        decision = manager.explain_file("mcon.agent.coder", "read", "/workspace/../etc/passwd")
+
+        self.assertFalse(decision["final"]["allowed"])
+        self.assertEqual(decision["path"], "/etc/passwd")
+
+    def test_command_file_arguments_check_paths_before_no_index_option(self) -> None:
+        manager = PolicyManager.load(Path("configs/plugins/mcon"))
+
+        decision = manager.explain_command_file_arguments(
+            "mcon.agent.coder",
+            ["git", "diff", "/etc/passwd", "--no-index", "/workspace/README.md"],
+            cwd="/workspace",
+        )
+
+        self.assertFalse(decision["allowed"])
+        self.assertEqual(decision["violations"][0]["path"], "/etc/passwd")
+
+    def test_command_file_arguments_allow_git_diff_no_index_inside_read_policy(self) -> None:
+        manager = PolicyManager.load(Path("configs/plugins/mcon"))
+
+        decision = manager.explain_command_file_arguments(
+            "mcon.agent.coder",
+            ["git", "diff", "--no-index", "README.md", "/workspace/docs/plan.md"],
+            cwd="/workspace",
+        )
+
+        self.assertTrue(decision["allowed"])
+
     def test_agents_resolve_to_different_permissions(self) -> None:
         manager = PolicyManager.load(Path("configs/plugins/mcon"))
 

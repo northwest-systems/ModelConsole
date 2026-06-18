@@ -153,8 +153,9 @@ func buildBubblewrapArgs(spec ExecSpec, workspace string, cwd string) ([]string,
 		"--proc", "/proc",
 		"--dev", "/dev",
 		"--tmpfs", "/tmp",
+		"--dir", "/etc",
 	}
-	args = appendExistingReadOnlyBinds(args, []string{"/usr", "/bin", "/lib", "/lib64", "/etc"})
+	args = appendExistingReadOnlyBinds(args, []string{"/usr", "/bin", "/lib", "/lib64"})
 	args = append(args, "--dir", workspace)
 	if networkMode == "none" {
 		args = append(args, "--unshare-net")
@@ -164,9 +165,6 @@ func buildBubblewrapArgs(spec ExecSpec, workspace string, cwd string) ([]string,
 	sort.SliceStable(fileRules, func(i int, j int) bool {
 		return len(fileRules[i].Path) < len(fileRules[j].Path)
 	})
-	if len(fileRules) == 0 {
-		fileRules = []FileRule{{Action: "edit", Path: workspace}}
-	}
 	for _, rule := range fileRules {
 		ruleArgs, err := buildFileRuleArgs(rule, workspace, cleanSessionRoot, spec.Sandbox.SessionID)
 		if err != nil {

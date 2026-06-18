@@ -7,6 +7,7 @@ import os
 import queue
 import re
 import secrets
+import signal
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -97,6 +98,17 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
             workspace = _optional_string(payload, "workspace") or os.environ.get("MCON_WORKSPACE", "/workspace")
             cwd = _optional_string(payload, "cwd") or workspace
             network = _optional_string(payload, "network") or "none"
+            file_argument_decision = manager.explain_command_file_arguments(subject, argv, cwd=cwd)
+            if not file_argument_decision["allowed"]:
+                self._send_json(
+                    403,
+                    {
+                        "decision": decision,
+                        "file_argument_decision": file_argument_decision,
+                        "status": "blocked",
+                    },
+                )
+                return
             session_id = _agent_scoped_session_id(subject, _optional_string(payload, "session_id") or "default")
             session_root = os.environ.get("MCON_SESSION_ROOT", "/mcon/session-fs")
             spec = {
@@ -153,9 +165,7 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
             messages = _required_messages(payload)
             chat_id = _chat_id(payload, messages)
             cwd = _workspace_cwd(_optional_string(payload, "cwd"))
-            sandbox = _optional_string(payload, "sandbox") or "read-only"
-            if sandbox not in {"read-only", "workspace-write"}:
-                raise ValueError("sandbox must be read-only or workspace-write")
+            sandbox = _chat_sandbox(payload)
             prompt = _prompt_from_messages(
                 messages,
                 chat_id=chat_id,
@@ -397,6 +407,15 @@ def _workspace_cwd(value: str | None) -> Path:
     return cwd
 
 
+def _chat_sandbox(payload: dict[str, Any]) -> str:
+    sandbox = _optional_string(payload, "sandbox") or "read-only"
+    if sandbox not in {"read-only", "workspace-write"}:
+        raise ValueError("sandbox must be read-only or workspace-write")
+    if sandbox == "workspace-write":
+        raise ValueError("chat workspace-write is disabled until provider tools are enforced by mcon executor")
+    return sandbox
+
+
 def _stream_process_as_ndjson(process: subprocess.Popen[str], write_event: Any) -> None:
     events: queue.Queue[tuple[str, str | None]] = queue.Queue()
 
@@ -416,20 +435,56 @@ def _stream_process_as_ndjson(process: subprocess.Popen[str], write_event: Any) 
     for thread in threads:
         thread.start()
 
-    closed = set()
-    while len(closed) < 2:
-        kind, line = events.get()
-        if line is None:
-            closed.add(kind)
-            continue
-        if kind == "stdout":
-            try:
-                decoded = json.loads(line)
-            except json.JSONDecodeError:
-                write_event({"type": "stdout", "text": line})
+    try:
+        closed = set()
+        while len(closed) < 2:
+            kind, line = events.get()
+            if line is None:
+                closed.add(kind)
+                continue
+            if kind == "stdout":
+                try:
+                    decoded = json.loads(line)
+                except json.JSONDecodeError:
+                    write_event({"type": "stdout", "text": line})
+                else:
+                    write_event({"type": "codex_event", "event": decoded})
             else:
-                write_event({"type": "codex_event", "event": decoded})
-        else:
-            write_event({"type": "stderr", "text": line})
-    returncode = process.wait()
-    write_event({"type": "exit", "returncode": returncode})
+                write_event({"type": "stderr", "text": line})
+        returncode = process.wait()
+        write_event({"type": "exit", "returncode": returncode})
+    finally:
+        _terminate_process(process)
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> None:
+    process_group = getattr(process, "_mcon_process_group", None)
+    if process_group is not None:
+        _terminate_process_group(process, process_group)
+        return
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _terminate_process_group(process: subprocess.Popen[str], process_group: int) -> None:
+    if process.poll() is None:
+        try:
+            os.killpg(process_group, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if process.poll() is None:
+        process.wait()

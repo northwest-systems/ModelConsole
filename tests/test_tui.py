@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "mcon" / "src"))
 
+from mcon.tui import client as tui_client
 from mcon.server.app import _prompt_from_messages
 from mcon.tui.client import TuiState, _backspace, _delete_at_cursor, _delete_previous_word, _display_width, _event_text, _new_chat_id
 
@@ -77,6 +80,42 @@ class TuiTests(unittest.TestCase):
     def test_display_width_counts_wide_characters(self) -> None:
         self.assertEqual(_display_width("abc"), 3)
         self.assertEqual(_display_width("テスト"), 6)
+
+    def test_chat_queues_second_message_while_session_is_active(self) -> None:
+        state = TuiState(server_url="http://127.0.0.1:8765")
+        started: list[str] = []
+        original_start = tui_client._start_chat_worker
+        try:
+            tui_client._start_chat_worker = lambda _state, message: started.append(message["chat_id"])  # type: ignore[assignment]
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                tui_client._chat(state, "first")
+                tui_client._chat(state, "second")
+
+            self.assertEqual(len(started), 1)
+            self.assertEqual(len(state.pending_chats), 1)
+            self.assertEqual(len(state.active_chat_ids), 1)
+            self.assertEqual([message["content"] for message in state.messages], ["first"])
+
+            with state.lock:
+                state.active_chat_ids.clear()
+                next_message = tui_client._pop_next_chat_locked(state)
+
+            self.assertIsNotNone(next_message)
+            self.assertEqual(next_message["content"], "second")
+            self.assertEqual(state.active_chat_ids, {next_message["chat_id"]})
+            self.assertEqual([message["content"] for message in state.messages], ["first", "second"])
+        finally:
+            tui_client._start_chat_worker = original_start  # type: ignore[assignment]
+
+    def test_session_settings_cannot_change_while_chat_is_active(self) -> None:
+        state = TuiState(server_url="http://127.0.0.1:8765")
+        state.active_chat_ids.add("#00001")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            tui_client._handle_command(state, "/subject mcon.agent.auditor")
+
+        self.assertEqual(state.subject, "mcon.agent.coder")
 
 
 if __name__ == "__main__":

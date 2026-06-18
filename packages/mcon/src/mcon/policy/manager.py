@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import posixpath
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -189,6 +190,22 @@ class PolicyManager:
                 "allowed": allowed,
                 "permission": final.fqn,
             },
+        }
+
+    def explain_command_file_arguments(self, subject_name: str, argv: list[str], *, cwd: str = "/workspace") -> dict[str, Any]:
+        checked: list[dict[str, Any]] = []
+        violations: list[dict[str, Any]] = []
+        for access in _command_file_accesses(argv, cwd=cwd):
+            decision = self.explain_file(subject_name, access["operation"], access["path"])
+            checked.append(decision)
+            if not decision["final"]["allowed"]:
+                violations.append(decision)
+        return {
+            "subject": self.resolve_subject(subject_name).subject,
+            "argv": argv,
+            "checked": checked,
+            "violations": violations,
+            "allowed": not violations,
         }
 
     def sandbox_spec(
@@ -399,6 +416,34 @@ def _command_matches(permission: CommandPermission, argv: list[str]) -> bool:
     return True
 
 
+def _command_file_accesses(argv: list[str], *, cwd: str) -> list[dict[str, str]]:
+    if len(argv) >= 3 and argv[0] == "git" and argv[1] == "diff" and "--no-index" in argv[2:]:
+        return [{"operation": "read", "path": path} for path in _git_diff_no_index_paths(argv, cwd=cwd)]
+    return []
+
+
+def _git_diff_no_index_paths(argv: list[str], *, cwd: str) -> list[str]:
+    paths: list[str] = []
+    force_positional = False
+    for arg in argv[2:]:
+        if arg == "--no-index":
+            continue
+        if arg == "--":
+            force_positional = True
+            continue
+        if not force_positional and arg.startswith("-"):
+            continue
+        paths.append(_resolve_command_path(arg, cwd=cwd))
+    return paths
+
+
+def _resolve_command_path(path: str, *, cwd: str) -> str:
+    candidate = PurePosixPath(path)
+    if not candidate.is_absolute():
+        candidate = PurePosixPath(_normalize_posix_path(cwd)) / candidate
+    return _normalize_posix_path(str(candidate))
+
+
 def _parse_git_target_branches(argv: list[str]) -> set[str]:
     if len(argv) < 2 or argv[0] != "git" or argv[1] != "push":
         return set()
@@ -436,7 +481,7 @@ def _normalize_posix_path(path: str) -> str:
     pure_path = PurePosixPath(path)
     if not pure_path.is_absolute():
         raise PolicyError(f"path must be absolute: {path}")
-    return pure_path.as_posix()
+    return posixpath.normpath(pure_path.as_posix())
 
 
 def _required_string(table: dict[str, Any], key: str, context: str) -> str:
