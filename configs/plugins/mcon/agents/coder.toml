@@ -3,4 +3,5 @@ description = "General coding agent."
 uses = [
   "workspace",
   "git",
+  "provider-network",
 ]

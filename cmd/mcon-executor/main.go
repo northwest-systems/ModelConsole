@@ -20,16 +20,18 @@ type ExecSpec struct {
 	Argv    []string          `json:"argv"`
 	Cwd     string            `json:"cwd"`
 	Env     map[string]string `json:"env"`
+	Stdin   string            `json:"stdin"`
 	Sandbox SandboxSpec       `json:"sandbox"`
 }
 
 type SandboxSpec struct {
-	Enabled     bool       `json:"enabled"`
-	Workspace   string     `json:"workspace"`
-	Network     string     `json:"network"`
-	SessionID   string     `json:"session_id"`
-	SessionRoot string     `json:"session_root"`
-	Files       []FileRule `json:"files"`
+	Enabled      bool       `json:"enabled"`
+	Workspace    string     `json:"workspace"`
+	Network      string     `json:"network"`
+	SessionID    string     `json:"session_id"`
+	SessionRoot  string     `json:"session_root"`
+	Files        []FileRule `json:"files"`
+	RuntimeFiles []FileRule `json:"runtime_files"`
 }
 
 type FileRule struct {
@@ -57,6 +59,9 @@ func run(stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
 	command, err := buildCommand(spec)
 	if err != nil {
 		return err
+	}
+	if spec.Stdin != "" {
+		command.Stdin = strings.NewReader(spec.Stdin)
 	}
 	command.Stdout = stdout
 	command.Stderr = stderr
@@ -154,6 +159,8 @@ func buildBubblewrapArgs(spec ExecSpec, workspace string, cwd string) ([]string,
 		"--dev", "/dev",
 		"--tmpfs", "/tmp",
 		"--dir", "/etc",
+		"--dir", "/etc/ssl",
+		"--dir", "/mcon",
 	}
 	args = appendExistingReadOnlyBinds(args, []string{"/usr", "/bin", "/lib", "/lib64"})
 	args = append(args, "--dir", workspace)
@@ -172,9 +179,55 @@ func buildBubblewrapArgs(spec ExecSpec, workspace string, cwd string) ([]string,
 		}
 		args = append(args, ruleArgs...)
 	}
+	for _, rule := range spec.Sandbox.RuntimeFiles {
+		ruleArgs, err := buildRuntimeFileRuleArgs(rule, workspace)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, ruleArgs...)
+	}
 	args = append(args, "--chdir", cwd, "--")
 	args = append(args, spec.Argv...)
 	return args, nil
+}
+
+func buildRuntimeFileRuleArgs(rule FileRule, workspace string) ([]string, error) {
+	path, err := cleanAbsolutePath(rule.Path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid runtime file rule path: %w", err)
+	}
+	if pathWithin(workspace, path) {
+		return nil, fmt.Errorf("runtime file rule must be outside workspace: %s", path)
+	}
+	if !allowedRuntimePath(path) {
+		return nil, fmt.Errorf("runtime file rule path is not allowlisted: %s", path)
+	}
+	switch rule.Action {
+	case "read":
+		return []string{"--ro-bind-try", path, path}, nil
+	case "edit":
+		if !pathWithin("/mcon/provider-runtime", path) {
+			return nil, fmt.Errorf("writable runtime file rule must be inside provider runtime: %s", path)
+		}
+		return []string{"--bind-try", path, path}, nil
+	default:
+		return nil, fmt.Errorf("unsupported runtime file rule action: %s", rule.Action)
+	}
+}
+
+func allowedRuntimePath(path string) bool {
+	if pathWithin("/mcon/codex-home/packages", path) {
+		return true
+	}
+	if pathWithin("/mcon/provider-runtime", path) {
+		return true
+	}
+	switch path {
+	case "/etc/ssl/certs", "/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/gai.conf":
+		return true
+	default:
+		return false
+	}
 }
 
 func appendExistingReadOnlyBinds(args []string, paths []string) []string {

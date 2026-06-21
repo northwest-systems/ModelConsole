@@ -99,7 +99,11 @@ docker compose exec mcon \
   uv run --no-project python -m mcon tui --server http://127.0.0.1:8765
 ```
 
-通常入力は mcon の orchestration chat stream に送る。TUI は各 user message に `#01234` 形式の chat id を付け、応答待ち中も次の入力を受け付ける。server の `/api/chat/stream` は provider、chat id、解決済みの mcon policy context を使って実行先を決める。現時点の provider は `codex` のみで、内部では `codex exec --json --sandbox read-only` を NDJSON として中継する。
+通常入力は mcon の orchestration chat stream に送る。TUI は各 user message に `#01234` 形式の chat id を付け、応答待ち中も次の入力を受け付ける。server の `/api/chat/stream` は provider、chat id、解決済みの mcon policy context を使って実行先を決める。現時点の provider は `codex` のみで、Codex プロセス全体を mcon executor の bubblewrap namespace 内で起動し、stdout/stderr を NDJSON として中継する。
+
+stream のファイル mount は agent subject の file policy から生成する。chat は `read-only` profile で実行するため、`edit` は読み取り専用へ縮退し、`write` 専用 path は mask される。provider API 通信は `purpose=provider` の network policy が `inherit` を許可した subject にだけ与える。通常の `/api/exec` は `purpose=command` なので、request から `network=inherit` を指定しても対応する policy がなければ拒否される。
+
+Codex 認証情報は、実行ごとに `/mcon/provider-runtime` へ必要ファイルだけをコピーする。コピーを Codex runtime home として namespace 内へ mountし、Codexが最初のイベントを返した時点で認証ファイルを削除する。runtime directory自体も実行終了時に削除する。元の`codex-home` volumeはnamespaceへ直接mountしない。
 
 TUI commands:
 

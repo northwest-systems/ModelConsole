@@ -7,6 +7,7 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import signal
 import subprocess
 import threading
@@ -51,6 +52,9 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
                 if path == "/api/policy/explain-file":
                     self._handle_explain_file(payload)
                     return
+                if path == "/api/policy/explain-network":
+                    self._handle_explain_network(payload)
+                    return
                 if path == "/api/exec":
                     self._handle_exec(payload)
                     return
@@ -86,6 +90,12 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
             path = _required_string(payload, "path")
             self._send_json(200, manager.explain_file(subject, operation, path))
 
+        def _handle_explain_network(self, payload: dict[str, Any]) -> None:
+            subject = _required_string(payload, "subject")
+            mode = _required_string(payload, "mode")
+            purpose = _required_string(payload, "purpose")
+            self._send_json(200, manager.explain_network(subject, mode, purpose=purpose))
+
         def _handle_exec(self, payload: dict[str, Any]) -> None:
             subject = _required_string(payload, "subject")
             argv = _required_string_list(payload, "argv")
@@ -98,6 +108,17 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
             workspace = _optional_string(payload, "workspace") or os.environ.get("MCON_WORKSPACE", "/workspace")
             cwd = _optional_string(payload, "cwd") or workspace
             network = _optional_string(payload, "network") or "none"
+            network_decision = manager.explain_network(subject, network, purpose="command")
+            if not network_decision["final"]["allowed"]:
+                self._send_json(
+                    403,
+                    {
+                        "decision": decision,
+                        "network_decision": network_decision,
+                        "status": "blocked",
+                    },
+                )
+                return
             file_argument_decision = manager.explain_command_file_arguments(subject, argv, cwd=cwd)
             if not file_argument_decision["allowed"]:
                 self._send_json(
@@ -119,6 +140,7 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
                     subject,
                     workspace=workspace,
                     network=network,
+                    network_purpose="command",
                     session_id=session_id,
                     session_root=session_root,
                 ),
@@ -171,24 +193,38 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
                 chat_id=chat_id,
                 policy_context=_policy_context(resolved, cwd=cwd, sandbox=sandbox),
             )
+            session_id = _agent_scoped_session_id(subject, _optional_string(payload, "session_id") or "default")
+            sandbox_spec = manager.sandbox_spec(
+                subject,
+                workspace=os.environ.get("MCON_WORKSPACE", "/workspace"),
+                network="inherit",
+                network_purpose="provider",
+                file_access="read-only",
+                session_id=session_id,
+                session_root=os.environ.get("MCON_SESSION_ROOT", "/mcon/session-fs"),
+            )
 
             try:
-                process = codex.popen_exec_stream(prompt, workspace=cwd, sandbox=sandbox)
+                process = codex.popen_exec_stream(prompt, workspace=cwd, sandbox_spec=sandbox_spec)
             except FileNotFoundError as error:
-                raise ValueError("codex command not found in PATH") from error
-            self._start_ndjson(200)
-            write_event = lambda event: self._write_ndjson({"chat_id": chat_id, **event})
-            write_event(
-                {
-                    "type": "start",
-                    "orchestrator": "mcon",
-                    "provider": provider,
-                    "subject": subject,
-                    "cwd": str(cwd),
-                    "sandbox": sandbox,
-                }
-            )
-            _stream_process_as_ndjson(process, write_event)
+                raise ValueError("mcon-executor command not found in PATH") from error
+            try:
+                self._start_ndjson(200)
+                write_event = lambda event: self._write_ndjson({"chat_id": chat_id, **event})
+                write_event(
+                    {
+                        "type": "start",
+                        "orchestrator": "mcon",
+                        "provider": provider,
+                        "subject": subject,
+                        "cwd": str(cwd),
+                        "sandbox": sandbox,
+                        "network": sandbox_spec["network"],
+                    }
+                )
+                _stream_process_as_ndjson(process, write_event)
+            finally:
+                _terminate_process(process)
 
         def _handle_auth_get(self, path: str) -> None:
             parts = path.strip("/").split("/")
@@ -354,6 +390,17 @@ def _policy_context(resolved: Any, *, cwd: Path, sandbox: str) -> str:
             )
     else:
         lines.append("files: none")
+    lines.append("network_policy: no matching permission means deny; disabled network is always allowed.")
+    if resolved.network:
+        lines.append("network:")
+        for network_permission in resolved.network:
+            lines.append(
+                "  "
+                + f"- {network_permission.fqn}: action={network_permission.action}; "
+                + f"mode={network_permission.mode}; purposes={','.join(network_permission.purposes)}"
+            )
+    else:
+        lines.append("network: none")
     if resolved.credentials:
         credential_names = ", ".join(f"{key}->{value.env_name}" for key, value in sorted(resolved.credentials.items()))
         lines.append(f"credential_policy_names_only: {credential_names}")
@@ -443,6 +490,7 @@ def _stream_process_as_ndjson(process: subprocess.Popen[str], write_event: Any) 
                 closed.add(kind)
                 continue
             if kind == "stdout":
+                _scrub_process_credentials(process)
                 try:
                     decoded = json.loads(line)
                 except json.JSONDecodeError:
@@ -458,18 +506,33 @@ def _stream_process_as_ndjson(process: subprocess.Popen[str], write_event: Any) 
 
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:
-    process_group = getattr(process, "_mcon_process_group", None)
-    if process_group is not None:
-        _terminate_process_group(process, process_group)
-        return
-    if process.poll() is not None:
-        return
-    process.terminate()
     try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
+        process_group = getattr(process, "_mcon_process_group", None)
+        if process_group is not None:
+            _terminate_process_group(process, process_group)
+            return
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+    finally:
+        runtime_dir = getattr(process, "_mcon_runtime_dir", None)
+        if runtime_dir is not None:
+            shutil.rmtree(runtime_dir, ignore_errors=True)
+
+
+def _scrub_process_credentials(process: subprocess.Popen[str]) -> None:
+    credential_paths = getattr(process, "_mcon_credential_paths", [])
+    for path in credential_paths:
+        try:
+            Path(path).unlink()
+        except FileNotFoundError:
+            pass
+    process._mcon_credential_paths = []  # type: ignore[attr-defined]
 
 
 def _terminate_process_group(process: subprocess.Popen[str], process_group: int) -> None:

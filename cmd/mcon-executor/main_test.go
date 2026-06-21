@@ -21,6 +21,19 @@ func TestRunExecutesCommandWithProvidedEnv(t *testing.T) {
 	}
 }
 
+func TestRunPassesProvidedStdinToCommand(t *testing.T) {
+	input := strings.NewReader(`{"argv":["/bin/sh","-c","cat"],"stdin":"hello"}`)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	if err := run(input, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v, stderr=%s", err, stderr.String())
+	}
+	if stdout.String() != "hello" {
+		t.Fatalf("stdout = %q, want hello", stdout.String())
+	}
+}
+
 func TestRunRejectsEmptyArgv(t *testing.T) {
 	input := strings.NewReader(`{"argv":[]}`)
 	var stdout bytes.Buffer
@@ -56,6 +69,10 @@ func TestBuildCommandWrapsSandboxedCommandWithBubblewrap(t *testing.T) {
 				{Action: "edit", Path: docsPath},
 				{Action: "write", Path: generatedPath},
 			},
+			RuntimeFiles: []FileRule{
+				{Action: "read", Path: "/mcon/codex-home/packages"},
+				{Action: "read", Path: "/etc/resolv.conf"},
+			},
 		},
 	}
 
@@ -74,6 +91,8 @@ func TestBuildCommandWrapsSandboxedCommandWithBubblewrap(t *testing.T) {
 		"--tmpfs " + secretsPath,
 		"--bind-try " + docsPath + " " + docsPath,
 		"--bind " + filepath.Join(sessionRoot, "test-session", "fs", "generated") + " " + generatedPath,
+		"--ro-bind-try /mcon/codex-home/packages /mcon/codex-home/packages",
+		"--ro-bind-try /etc/resolv.conf /etc/resolv.conf",
 		"--chdir " + docsPath + " -- /usr/bin/env",
 	} {
 		if !strings.Contains(joined, expected) {
@@ -82,6 +101,82 @@ func TestBuildCommandWrapsSandboxedCommandWithBubblewrap(t *testing.T) {
 	}
 	if strings.Contains(joined, "--ro-bind /etc /etc") {
 		t.Fatalf("bubblewrap args should not expose host /etc: %q", joined)
+	}
+}
+
+func TestBuildCommandRejectsRuntimePathOutsideAllowlist(t *testing.T) {
+	_, err := buildCommand(
+		ExecSpec{
+			Argv: []string{"/bin/true"},
+			Cwd:  "/workspace",
+			Sandbox: SandboxSpec{
+				Enabled:   true,
+				Workspace: "/workspace",
+				RuntimeFiles: []FileRule{
+					{Action: "read", Path: "/root"},
+				},
+			},
+		},
+	)
+	if err == nil {
+		t.Fatal("buildCommand returned nil error for non-allowlisted runtime path")
+	}
+}
+
+func TestBuildCommandRejectsWritableRuntimeCredentialMount(t *testing.T) {
+	_, err := buildCommand(
+		ExecSpec{
+			Argv: []string{"/bin/true"},
+			Cwd:  "/workspace",
+			Sandbox: SandboxSpec{
+				Enabled:   true,
+				Workspace: "/workspace",
+				RuntimeFiles: []FileRule{
+					{Action: "write", Path: "/mcon/codex-home"},
+				},
+			},
+		},
+	)
+	if err == nil {
+		t.Fatal("buildCommand returned nil error for unsupported runtime write rule")
+	}
+}
+
+func TestBuildCommandRejectsReadingCodexCredentialHome(t *testing.T) {
+	_, err := buildCommand(
+		ExecSpec{
+			Argv: []string{"/bin/true"},
+			Cwd:  "/workspace",
+			Sandbox: SandboxSpec{
+				Enabled:   true,
+				Workspace: "/workspace",
+				RuntimeFiles: []FileRule{
+					{Action: "read", Path: "/mcon/codex-home/auth.json"},
+				},
+			},
+		},
+	)
+	if err == nil {
+		t.Fatal("buildCommand returned nil error for Codex credential path")
+	}
+}
+
+func TestBuildCommandRejectsWritableEtcRuntimeMount(t *testing.T) {
+	_, err := buildCommand(
+		ExecSpec{
+			Argv: []string{"/bin/true"},
+			Cwd:  "/workspace",
+			Sandbox: SandboxSpec{
+				Enabled:   true,
+				Workspace: "/workspace",
+				RuntimeFiles: []FileRule{
+					{Action: "edit", Path: "/etc/resolv.conf"},
+				},
+			},
+		},
+	)
+	if err == nil {
+		t.Fatal("buildCommand returned nil error for writable /etc runtime path")
 	}
 }
 

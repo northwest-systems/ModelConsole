@@ -1,0 +1,8 @@
+[policy.provider-network]
+description = "Provider control-plane network access."
+
+[policy.provider-network.network.provider-api]
+description = "Allow provider processes to reach their model API."
+action = "allow"
+mode = "inherit"
+purposes = ["provider"]

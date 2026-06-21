@@ -3,6 +3,7 @@ from __future__ import annotations
 import signal
 import sys
 import subprocess
+import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -17,6 +18,7 @@ from mcon.server.app import (
     _policy_context,
     _prompt_from_messages,
     _required_messages,
+    _scrub_process_credentials,
     _stream_process_as_ndjson,
     _terminate_process_group,
 )
@@ -74,6 +76,7 @@ class ServerTests(unittest.TestCase):
         self.assertIn("command_policy: last matching permission wins", context)
         self.assertIn("mcon.policy.git.commands.git-push: action=ask", context)
         self.assertIn("file_actions: deny=no access; read=stat/list/read; write=create only; edit=stat/list/read/create/write.", context)
+        self.assertIn("mcon.policy.provider-network.network.provider-api: action=allow", context)
 
     def test_stream_process_terminates_on_write_failure(self) -> None:
         process = subprocess.Popen(
@@ -117,6 +120,33 @@ class ServerTests(unittest.TestCase):
                 unittest.mock.call(1234, signal.SIGKILL),
             ],
         )
+
+    def test_terminate_process_removes_provider_runtime_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            runtime_dir = Path(root) / "provider"
+            runtime_dir.mkdir()
+            process = unittest.mock.MagicMock()
+            process.poll.return_value = 0
+            process._mcon_process_group = None
+            process._mcon_runtime_dir = str(runtime_dir)
+
+            from mcon.server.app import _terminate_process
+
+            _terminate_process(process)
+
+            self.assertFalse(runtime_dir.exists())
+
+    def test_scrub_process_credentials_removes_auth_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            auth_path = Path(root) / "auth.json"
+            auth_path.write_text("secret", encoding="utf-8")
+            process = unittest.mock.MagicMock()
+            process._mcon_credential_paths = [str(auth_path)]
+
+            _scrub_process_credentials(process)
+
+            self.assertFalse(auth_path.exists())
+            self.assertEqual(process._mcon_credential_paths, [])
 
 
 if __name__ == "__main__":

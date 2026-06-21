@@ -64,6 +64,48 @@ class PolicyManagerTests(unittest.TestCase):
             ],
         )
 
+    def test_provider_network_is_allowed_only_for_provider_purpose(self) -> None:
+        manager = PolicyManager.load(Path("configs/plugins/mcon"))
+
+        provider = manager.explain_network("mcon.agent.coder", "inherit", purpose="provider")
+        command = manager.explain_network("mcon.agent.coder", "inherit", purpose="command")
+        disabled = manager.explain_network("mcon.agent.coder", "none", purpose="command")
+
+        self.assertTrue(provider["final"]["allowed"])
+        self.assertFalse(command["final"]["allowed"])
+        self.assertTrue(disabled["final"]["allowed"])
+
+    def test_sandbox_spec_rejects_unapproved_network_inheritance(self) -> None:
+        manager = PolicyManager.load(Path("configs/plugins/mcon"))
+
+        with self.assertRaises(PolicyError):
+            manager.sandbox_spec(
+                "mcon.agent.coder",
+                network="inherit",
+                network_purpose="command",
+            )
+
+    def test_read_only_sandbox_downgrades_edit_and_masks_write_only_paths(self) -> None:
+        manager = PolicyManager.load(Path("configs/plugins/mcon"))
+
+        spec = manager.sandbox_spec(
+            "mcon.agent.coder",
+            network="inherit",
+            network_purpose="provider",
+            file_access="read-only",
+        )
+
+        self.assertEqual(
+            spec["files"],
+            [
+                {"action": "read", "path": "/workspace"},
+                {"action": "deny", "path": "/workspace/generated"},
+                {"action": "read", "path": "/workspace/docs"},
+                {"action": "deny", "path": "/workspace/.env"},
+                {"action": "deny", "path": "/workspace/secrets"},
+            ],
+        )
+
     def test_command_file_arguments_block_git_diff_no_index_outside_policy(self) -> None:
         manager = PolicyManager.load(Path("configs/plugins/mcon"))
 

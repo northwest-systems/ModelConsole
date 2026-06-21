@@ -252,7 +252,7 @@ git diff --no-index /etc/passwd /workspace/README.md
 |---|---|---|---|
 | コマンド権限 | subjectに紐づく`allow`、`deny`、`ask`を解決する | Pythonサーバーの`PolicyManager.explain_command` | `ask`の承認処理は未完成 |
 | ファイル権限 | subjectに紐づく`deny`、`read`、`write`、`edit`を解決する | PythonのポリシーマネージャーとGo実行プログラムのbubblewrap mount | コマンド引数解析は一部コマンドだけ |
-| ネットワーク権限 | API入力の`none`または`inherit`を実行プログラムへ渡す | Go実行プログラムのnetwork namespace | subject別ポリシーになっておらず、呼び出し元入力を信用している |
+| ネットワーク権限 | subject、mode、purposeに一致するルールを解決する | PythonのポリシーマネージャーとGo実行プログラムのnetwork namespace | 現状は`none`とコンテナネットワーク継承だけで、宛先単位allowlistは未実装 |
 | 認証情報 | コマンドポリシーに利用名を保持する | 現状は説明と解決が中心 | 実行時注入と利用監査を統合する必要がある |
 
 ### subjectとポリシーの解決
@@ -411,9 +411,13 @@ sequenceDiagram
 
 ### ネットワークアクセス権限の現状
 
-現行の設定ファイルには、subject別のネットワークポリシー定義がない。
-`/api/exec`はリクエストの`network`値を受け取り、省略時だけ`none`を設定する。
-その値は`PolicyManager.sandbox_spec`を経由するが、subject権限との照合は行われない。
+ネットワークポリシーはsubjectの`uses`から解決し、`mode`と`purpose`の両方が一致した場合だけ許可する。
+現行の`provider-network`ポリシーは、`purpose=provider`に限って`mode=inherit`を許可する。
+`coder`と`auditor`はこのポリシーを参照するため、CodexプロセスはモデルAPIへ接続できる。
+
+`/api/exec`は`purpose=command`として判定する。リクエストから`network=inherit`を指定しても、
+command用途に一致する許可ルールがないため、executorを起動する前に拒否する。
+`network=none`は通信を無効にする指定なので、明示的な許可ルールがなくても利用できる。
 
 Go実行プログラムが受理する値は次の2つだけである。
 
@@ -424,11 +428,7 @@ Go実行プログラムが受理する値は次の2つだけである。
 
 これ以外の値はexecutorがエラーとして拒否する。
 
-ただし、これはネットワーク「モードの形式検証」であり、ネットワーク「権限のポリシー判定」ではない。
-現状はAPIを呼べる主体が`network=inherit`を指定すると、subjectに関係なくコンテナネットワークを
-継承できる。このため、未信頼クライアントへ`/api/exec`を公開してはならない。
-
-また、`inherit`は宛先ホスト、ポート、プロトコルを制限しない。
+`inherit`は宛先ホスト、ポート、プロトコルを制限しない。
 将来のネットワークポリシーでは、最低限次を区別する。
 
 - `none`: 全通信を禁止
@@ -448,23 +448,27 @@ sequenceDiagram
     participant Bwrap as bubblewrap
     participant Network as コンテナネットワーク
 
-    Client->>Server: networkを含む実行要求
+    Client->>Server: subject・networkを含む実行要求
     Server->>Server: 未指定ならnone
-    Note over Server,Policy: 現状はsubject別ネットワーク権限を照合しない
-    Server->>Policy: sandbox_spec(subject, network)
-    Policy-->>Server: 指定値をそのままsandbox specへ格納
-    Server->>Executor: sandbox specを送信
-    Executor->>Executor: noneまたはinheritか検証
+    Server->>Policy: explain_network(subject, network, purpose=command)
 
-    alt networkがnone
+    alt networkがinheritで許可ルールなし
+        Policy-->>Server: deny
+        Server-->>Client: 403 blocked
+    else networkがnone
+        Policy-->>Server: allow
+        Server->>Policy: sandbox_specを生成
+        Server->>Executor: sandbox specを送信
+        Executor->>Executor: noneまたはinheritか再検証
         Executor->>Bwrap: --unshare-netを追加
         Bwrap--xNetwork: 外部接続不可
-    else networkがinherit
+    else purposeに一致するinherit許可あり
+        Policy-->>Server: allow
+        Server->>Policy: sandbox_specを生成
+        Server->>Executor: sandbox specを送信
+        Executor->>Executor: noneまたはinheritか再検証
         Executor->>Bwrap: network namespaceを分離しない
         Bwrap->>Network: コンテナネットワークを利用
-    else 未対応の値
-        Executor-->>Server: unsupported network mode
-        Server-->>Client: 実行失敗
     end
 ```
 
@@ -534,21 +538,28 @@ action = "deny"
 
 ### chat・プロバイダー実行への適用範囲
 
-現行の`/api/exec`はmcon executorを通るため、上記のファイルmountと
-`network=none`によるnetwork namespace分離を適用できる。
+`/api/exec`と`/api/chat/stream`は、どちらもmcon executorを通る。
+chatではCodex内蔵shellを個別に差し替えず、Codexプロセス全体をbubblewrap namespace内で起動する。
 
-一方、現行の`/api/chat/stream`はCodex CLIをプロバイダーアダプターから直接起動する。
-chatの`workspace-write`は拒否しているが、プロバイダー全体をmcon executorで包んでいないため、
-ファイル権限とネットワーク権限を同じ強度では強制できていない。
-Codex自身の`read-only` sandboxへ依存しているが、Docker環境ではseccomp初期化に失敗する場合がある。
+chatのファイルルールはsubjectポリシーから生成した後、`read-only` profileへ縮退する。
+`edit`は`read`へ変換し、`write`専用パスは`deny`としてmaskする。
+そのため、Codex内蔵shellを含む全子プロセスが同じmount制約を継承する。
 
-したがって、設計上の完了条件は次のとおり。
+CodexはモデルAPI通信が必要なため、`purpose=provider`として`inherit`を要求する。
+ポリシーサービスが許可した場合だけコンテナネットワークを継承する。
 
-- プロバイダーアダプターのプロセス全体を実行サービス経由で起動する。
-- プロバイダーへ見せるファイルをsubjectのファイルポリシーからmountする。
-- プロバイダーの外向き通信をsubjectのネットワークポリシーから構築する。
-- プロバイダー内部のツール実行を構造化要求として実行サービスへ戻す。
-- chatと`/api/exec`で同じポリシーサービスの判断と監査イベントを使用する。
+Codexは実行中にruntime homeへ書き込むため、元の認証ボリュームを直接mountしない。
+`auth.json`と`installation_id`だけを実行ごとの`/mcon/provider-runtime`へコピーし、
+そのセッションコピーをnamespaceへ書き込み可能mountする。
+Codex実体の`packages`は読み取り専用mountし、セッションコピーはプロセス終了時に削除する。
+`auth.json`はCodexが最初のstdoutイベントを返した時点で削除し、
+通常のツール実行が始まる前にファイルとして参照できる時間を閉じる。
+
+残る設計課題は次のとおり。
+
+- `inherit`を宛先ホスト、ポート、プロトコル単位のallowlistへ置き換える。
+- 認証ファイル削除前の短い初期化区間も完全に分離するため、将来は認証プロキシへ移行する。
+- networkとfileの拒否をEvent Serviceの監査イベントとして永続化する。
 
 ## エントリーポイントから応答までのフロー
 
