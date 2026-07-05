@@ -43,6 +43,8 @@ class CodexAdapterTests(unittest.TestCase):
                     "network": "inherit",
                     "files": [{"action": "read", "path": "/workspace"}],
                 },
+                mcp_token="token",
+                mcp_url="http://127.0.0.1:8765/api/mcp",
             )
 
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
@@ -55,6 +57,7 @@ class CodexAdapterTests(unittest.TestCase):
         spec = json.loads(process.stdin.write.call_args.args[0])
         self.assertEqual(spec["stdin"], "hello")
         self.assertEqual(spec["env"]["CODEX_HOME"], "/mcon/provider-runtime/codex-test")
+        self.assertEqual(spec["env"]["MCON_MCP_TOKEN"], "token")
         self.assertEqual(spec["sandbox"]["network"], "inherit")
         self.assertEqual(
             spec["sandbox"]["runtime_files"],
@@ -62,6 +65,9 @@ class CodexAdapterTests(unittest.TestCase):
         )
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", spec["argv"])
         self.assertIn("multi_agent", spec["argv"])
+        self.assertIn("shell_tool", spec["argv"])
+        self.assertIn("unified_exec", spec["argv"])
+        self.assertIn('mcp_servers.mcon.url="http://127.0.0.1:8765/api/mcp"', spec["argv"])
         self.assertNotIn("--sandbox", spec["argv"])
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import signal
 import sys
 import subprocess
@@ -15,6 +16,7 @@ from mcon.server.app import (
     _agent_scoped_session_id,
     _chat_id,
     _chat_sandbox,
+    _handle_mcp_request,
     _policy_context,
     _prompt_from_messages,
     _required_messages,
@@ -59,6 +61,8 @@ class ServerTests(unittest.TestCase):
         self.assertIn("Reply to the latest USER message for #01234.", prompt)
         self.assertIn("ModelConsole policy context:", prompt)
         self.assertIn("USER #01234: hello", prompt)
+        self.assertIn("The built-in shell is disabled.", prompt)
+        self.assertIn("run_command_session", prompt)
 
     def test_chat_id_uses_payload_or_last_message(self) -> None:
         self.assertEqual(_chat_id({"chat_id": "#99999"}, []), "#99999")
@@ -147,6 +151,79 @@ class ServerTests(unittest.TestCase):
 
             self.assertFalse(auth_path.exists())
             self.assertEqual(process._mcon_credential_paths, [])
+
+    def test_mcp_lists_only_command_session_tool(self) -> None:
+        manager = PolicyManager.load(Path("configs/plugins/mcon"))
+
+        response = _handle_mcp_request(
+            manager,
+            {
+                "subject": "mcon.agent.coder",
+                "parent_session_id": "parent",
+                "cwd": "/workspace",
+            },
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        )
+
+        self.assertEqual(response["result"]["tools"][0]["name"], "run_command_session")
+
+    def test_mcp_command_session_applies_caller_command_policy(self) -> None:
+        manager = PolicyManager.load(Path("configs/plugins/mcon"))
+
+        response = _handle_mcp_request(
+            manager,
+            {
+                "subject": "mcon.agent.auditor",
+                "parent_session_id": "parent",
+                "cwd": "/workspace",
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "run_command_session",
+                    "arguments": {"argv": ["git", "status"]},
+                },
+            },
+        )
+
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("command blocked", response["result"]["content"][0]["text"])
+
+    def test_mcp_command_session_runs_in_separate_executor_process(self) -> None:
+        manager = PolicyManager.load(Path("configs/plugins/mcon"))
+        completed = subprocess.CompletedProcess(
+            args=["mcon-executor"],
+            returncode=0,
+            stdout="ok",
+            stderr="",
+        )
+        with unittest.mock.patch("mcon.server.app.subprocess.run", return_value=completed) as run:
+            response = _handle_mcp_request(
+                manager,
+                {
+                    "subject": "mcon.agent.coder",
+                    "parent_session_id": "parent",
+                    "cwd": "/workspace",
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "run_command_session",
+                        "arguments": {"argv": ["git", "status"]},
+                    },
+                },
+            )
+
+        self.assertFalse(response["result"]["isError"])
+        structured = response["result"]["structuredContent"]
+        self.assertTrue(structured["session_id"].startswith("parent--tool-"))
+        spec = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(spec["sandbox"]["network"], "none")
+        self.assertEqual(spec["argv"], ["git", "status"])
 
 
 if __name__ == "__main__":

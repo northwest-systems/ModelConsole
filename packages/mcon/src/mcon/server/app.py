@@ -19,12 +19,19 @@ from typing import Any
 from mcon.adapters import codex
 from mcon.auth import AuthManager, AuthProviderError
 from mcon.policy import PolicyError, PolicyManager
+from mcon.run import RunService, RunState
 from mcon.text import utf8_safe
 
 
 def run_server(*, plugin_root: Path, host: str, port: int) -> None:
     manager = PolicyManager.load(plugin_root)
     auth_manager = AuthManager.default()
+    run_service = RunService(
+        root=Path(os.environ.get("MCON_RUN_ROOT", "/mcon/runs")),
+        default_workspace=Path(os.environ.get("MCON_WORKSPACE", "/workspace")),
+    )
+    mcp_contexts: dict[str, dict[str, str]] = {}
+    mcp_contexts_lock = threading.RLock()
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "mcon/0.1"
@@ -58,12 +65,21 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
                 if path == "/api/exec":
                     self._handle_exec(payload)
                     return
+                if path == "/api/runs":
+                    self._handle_create_run(payload)
+                    return
+                if path.startswith("/api/runs/"):
+                    self._handle_run_post(path, payload)
+                    return
                 if path == "/api/chat/stream":
                     self._handle_chat_stream(payload)
                     return
                 if path == "/api/chat/codex/stream":
                     payload.setdefault("provider", "codex")
                     self._handle_chat_stream(payload)
+                    return
+                if path == "/api/mcp":
+                    self._handle_mcp(payload)
                     return
                 if path.startswith("/api/auth/"):
                     self._handle_auth_post(path)
@@ -178,6 +194,41 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
                 },
             )
 
+        def _handle_create_run(self, payload: dict[str, Any]) -> None:
+            subject = _required_string(payload, "subject")
+            resolved = manager.resolve_subject(subject)
+            workspace_value = _optional_string(payload, "workspace")
+            workspace = Path(workspace_value).resolve() if workspace_value else None
+            record = run_service.create_run(
+                subject=subject,
+                workspace=workspace,
+                policy_snapshot={
+                    "subject": resolved.subject,
+                    "policies": list(resolved.policy_names),
+                },
+            )
+            self._send_json(201, record.to_json())
+
+        def _handle_run_post(self, path: str, payload: dict[str, Any]) -> None:
+            parts = path.strip("/").split("/")
+            if len(parts) != 4 or parts[:2] != ["api", "runs"]:
+                self._send_json(404, {"error": "not_found"})
+                return
+            run_id = parts[2]
+            action = parts[3]
+            if action == "sync-in":
+                record = run_service.sync_in(run_id)
+                status = 409 if record.state == RunState.QUARANTINED else 200
+                self._send_json(status, record.to_json())
+                return
+            if action == "diff":
+                self._send_json(200, run_service.diff(run_id))
+                return
+            if action == "discard":
+                self._send_json(200, run_service.discard(run_id).to_json())
+                return
+            self._send_json(404, {"error": "not_found"})
+
         def _handle_chat_stream(self, payload: dict[str, Any]) -> None:
             provider = _optional_string(payload, "provider") or "codex"
             if provider != "codex":
@@ -203,10 +254,25 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
                 session_id=session_id,
                 session_root=os.environ.get("MCON_SESSION_ROOT", "/mcon/session-fs"),
             )
+            mcp_token = secrets.token_urlsafe(32)
+            with mcp_contexts_lock:
+                mcp_contexts[mcp_token] = {
+                    "subject": subject,
+                    "parent_session_id": session_id,
+                    "cwd": str(cwd),
+                }
 
             try:
-                process = codex.popen_exec_stream(prompt, workspace=cwd, sandbox_spec=sandbox_spec)
+                process = codex.popen_exec_stream(
+                    prompt,
+                    workspace=cwd,
+                    sandbox_spec=sandbox_spec,
+                    mcp_token=mcp_token,
+                    mcp_url=f"http://127.0.0.1:{self.server.server_address[1]}/api/mcp",
+                )
             except FileNotFoundError as error:
+                with mcp_contexts_lock:
+                    mcp_contexts.pop(mcp_token, None)
                 raise ValueError("mcon-executor command not found in PATH") from error
             try:
                 self._start_ndjson(200)
@@ -224,7 +290,30 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
                 )
                 _stream_process_as_ndjson(process, write_event)
             finally:
+                with mcp_contexts_lock:
+                    mcp_contexts.pop(mcp_token, None)
                 _terminate_process(process)
+
+        def _handle_mcp(self, payload: dict[str, Any]) -> None:
+            authorization = self.headers.get("authorization") or ""
+            prefix = "Bearer "
+            if not authorization.startswith(prefix):
+                self._send_json(401, {"error": "missing_bearer_token"})
+                return
+            token = authorization[len(prefix) :]
+            with mcp_contexts_lock:
+                context = dict(mcp_contexts.get(token, {}))
+            if not context:
+                self._send_json(403, {"error": "invalid_mcp_token"})
+                return
+
+            response = _handle_mcp_request(manager, context, payload)
+            if response is None:
+                self.send_response(202)
+                self.send_header("content-length", "0")
+                self.end_headers()
+                return
+            self._send_json(200, response)
 
         def _handle_auth_get(self, path: str) -> None:
             parts = path.strip("/").split("/")
@@ -326,6 +415,8 @@ def _prompt_from_messages(
         "Continue the conversation using the transcript below.",
         "Do not assume tool output that is not present in the transcript.",
         "Respect the ModelConsole policy context exactly; do not claim access beyond it.",
+        "The built-in shell is disabled. Use the ModelConsole run_command_session MCP tool for commands.",
+        "Each command tool call runs in a separate child session under the caller's policy.",
     ]
     if chat_id:
         lines.extend(
@@ -461,6 +552,193 @@ def _chat_sandbox(payload: dict[str, Any]) -> str:
     if sandbox == "workspace-write":
         raise ValueError("chat workspace-write is disabled until provider tools are enforced by mcon executor")
     return sandbox
+
+
+def _handle_mcp_request(
+    manager: PolicyManager,
+    context: dict[str, str],
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    request_id = payload.get("id")
+    method = payload.get("method")
+    if not isinstance(method, str):
+        return _mcp_error(request_id, -32600, "method must be a string")
+    if request_id is None:
+        return None
+    if method == "initialize":
+        params = payload.get("params")
+        protocol_version = "2025-06-18"
+        if isinstance(params, dict) and isinstance(params.get("protocolVersion"), str):
+            protocol_version = params["protocolVersion"]
+        return _mcp_result(
+            request_id,
+            {
+                "protocolVersion": protocol_version,
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": "modelconsole", "version": "0.1"},
+                "instructions": (
+                    "The parent agent has no shell. Use run_command_session for allowed commands. "
+                    "Each call creates an isolated child execution session governed by the caller policy."
+                ),
+            },
+        )
+    if method == "ping":
+        return _mcp_result(request_id, {})
+    if method == "tools/list":
+        return _mcp_result(request_id, {"tools": [_command_session_tool()]})
+    if method == "tools/call":
+        params = payload.get("params")
+        if not isinstance(params, dict) or params.get("name") != "run_command_session":
+            return _mcp_error(request_id, -32602, "unknown tool")
+        arguments = params.get("arguments")
+        if not isinstance(arguments, dict):
+            return _mcp_error(request_id, -32602, "tool arguments must be an object")
+        try:
+            result = _run_command_session(manager, context, arguments)
+        except (PolicyError, ValueError) as error:
+            return _mcp_result(
+                request_id,
+                {
+                    "content": [{"type": "text", "text": str(error)}],
+                    "isError": True,
+                },
+            )
+        return _mcp_result(
+            request_id,
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(result, ensure_ascii=False, sort_keys=True),
+                    }
+                ],
+                "structuredContent": result,
+                "isError": result["status"] != "succeeded",
+            },
+        )
+    return _mcp_error(request_id, -32601, f"unsupported method: {method}")
+
+
+def _command_session_tool() -> dict[str, Any]:
+    return {
+        "name": "run_command_session",
+        "description": (
+            "Start a separate isolated child session to run one command. "
+            "The command, file, and network policies of the calling agent are enforced."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "argv": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "description": "Command argv without shell parsing.",
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory inside the workspace.",
+                },
+                "network": {
+                    "type": "string",
+                    "enum": ["none", "inherit"],
+                    "default": "none",
+                },
+                "timeout_seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 120,
+                    "default": 60,
+                },
+            },
+            "required": ["argv"],
+        },
+    }
+
+
+def _run_command_session(
+    manager: PolicyManager,
+    context: dict[str, str],
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    argv = arguments.get("argv")
+    if not isinstance(argv, list) or not argv or any(not isinstance(item, str) or not item for item in argv):
+        raise ValueError("argv must be a non-empty list of non-empty strings")
+    subject = context["subject"]
+    decision = manager.explain_command(subject, argv)
+    if decision["final"]["action"] != "allow":
+        raise ValueError(f"command blocked: {decision['final']}")
+
+    workspace = os.environ.get("MCON_WORKSPACE", "/workspace")
+    requested_cwd = arguments.get("cwd")
+    if requested_cwd is not None and not isinstance(requested_cwd, str):
+        raise ValueError("cwd must be a string")
+    cwd = str(_workspace_cwd(requested_cwd or context["cwd"]))
+    network = arguments.get("network", "none")
+    if not isinstance(network, str):
+        raise ValueError("network must be a string")
+    network_decision = manager.explain_network(subject, network, purpose="command")
+    if not network_decision["final"]["allowed"]:
+        raise ValueError(f"network blocked: {network_decision['final']}")
+    file_decision = manager.explain_command_file_arguments(subject, argv, cwd=cwd)
+    if not file_decision["allowed"]:
+        raise ValueError(f"file access blocked: {file_decision['violations']}")
+
+    timeout = arguments.get("timeout_seconds", 60)
+    if not isinstance(timeout, int | float) or timeout <= 0 or timeout > 120:
+        raise ValueError("timeout_seconds must be greater than 0 and at most 120")
+    child_id = f"{context['parent_session_id']}--tool-{secrets.token_hex(6)}"
+    spec = {
+        "argv": argv,
+        "cwd": cwd,
+        "env": {},
+        "sandbox": manager.sandbox_spec(
+            subject,
+            workspace=workspace,
+            network=network,
+            network_purpose="command",
+            session_id=child_id,
+            session_root=os.environ.get("MCON_SESSION_ROOT", "/mcon/session-fs"),
+        ),
+    }
+    try:
+        completed = subprocess.run(
+            ["mcon-executor"],
+            input=json.dumps(spec),
+            text=True,
+            capture_output=True,
+            timeout=float(timeout),
+            env=_executor_environment(),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        return {
+            "session_id": child_id,
+            "status": "timeout",
+            "returncode": None,
+            "stdout": error.stdout or "",
+            "stderr": error.stderr or "",
+        }
+    return {
+        "session_id": child_id,
+        "status": "succeeded" if completed.returncode == 0 else "failed",
+        "returncode": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+
+def _mcp_result(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _mcp_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {"code": code, "message": message},
+    }
 
 
 def _stream_process_as_ndjson(process: subprocess.Popen[str], write_event: Any) -> None:

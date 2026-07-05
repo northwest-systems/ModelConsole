@@ -23,7 +23,9 @@ GOCACHE="$PWD/.cache/go-build" go test ./cmd/mcon-executor
 PYTHONPATH=packages/mcon/src UV_CACHE_DIR="$PWD/.cache/uv" uv run --no-project python -m mcon explain mcon.agent.coder -- git push origin main
 ```
 
-Docker では host workspace 全体を container 上の `/workspace` に mount する。server / executor / Codex から見た作業対象も `/workspace` に統一する。
+Docker では host workspace 全体を container 上の `/workspace` に mount する。これは local-dev / legacy bind mode であり、ユーザー操作や高位権限の保守操作と同じ開発環境を共有するための外枠として扱う。通常 agent の権限制御は Docker mount ではなく、command / provider job ごとに作る bubblewrap namespace と policy で行う。
+
+安全な agent 実行の主系は Run API が作る secretless Agent Workspace である。`POST /api/runs` で run を作成し、`POST /api/runs/{run_id}/sync-in` で real workspace から `.env`、credential file、secret-like path、`.git` metadata を除外した作業コピーを作る。post-sync scan で secret-like content が見つかった run は `QUARANTINED` になり、agent 実行に進めない。`POST /api/runs/{run_id}/diff` は Agent Workspace 上の変更を patch として返す。real workspace への反映は後続 phase の approval / drift check / apply API に集約する。
 
 `write` は host workspace への直接 writable bind ではなく、container 内の session fs を対象 path に bind する。command が成功すると executor が session fs の生成物を host workspace へ同期する。host 側に既存 path がある場合は、mcon の workspace manifest に記録済みの managed path だけ上書きできる。これにより、新規作成は host に反映され、mcon が作ったファイルは agent 単位で last win になるが、元から host にあったファイルは上書きできない。別 agent は同じ `session_id` を指定しても別の session fs になる。
 
@@ -104,6 +106,8 @@ docker compose exec mcon \
 stream のファイル mount は agent subject の file policy から生成する。chat は `read-only` profile で実行するため、`edit` は読み取り専用へ縮退し、`write` 専用 path は mask される。provider API 通信は `purpose=provider` の network policy が `inherit` を許可した subject にだけ与える。通常の `/api/exec` は `purpose=command` なので、request から `network=inherit` を指定しても対応する policy がなければ拒否される。
 
 Codex 認証情報は、実行ごとに `/mcon/provider-runtime` へ必要ファイルだけをコピーする。コピーを Codex runtime home として namespace 内へ mountし、Codexが最初のイベントを返した時点で認証ファイルを削除する。runtime directory自体も実行終了時に削除する。元の`codex-home` volumeはnamespaceへ直接mountしない。
+
+親Codexでは内蔵`shell_tool`、`unified_exec`、`multi_agent`を無効化する。コマンドが必要な場合は、ModelConsoleがHTTP MCPで公開する`run_command_session`を使用する。ツール呼び出しごとに独立した子セッションIDと`mcon-executor`プロセスを作り、caller agentのcommand、file、network policyを再評価する。親Codexが直接shellを実行する経路はない。
 
 TUI commands:
 

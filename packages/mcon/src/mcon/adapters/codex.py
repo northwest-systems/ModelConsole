@@ -39,6 +39,8 @@ def popen_exec_stream(
     *,
     workspace: Path,
     sandbox_spec: dict[str, object],
+    mcp_token: str,
+    mcp_url: str,
 ) -> subprocess.Popen[str]:
     """Start Codex inside the mcon executor namespace."""
 
@@ -50,8 +52,20 @@ def popen_exec_stream(
         "--dangerously-bypass-approvals-and-sandbox",
         "--disable",
         "multi_agent",
+        "--disable",
+        "shell_tool",
+        "--disable",
+        "unified_exec",
         "--ephemeral",
         "--ignore-user-config",
+        "-c",
+        f'mcp_servers.mcon.url="{mcp_url}"',
+        "-c",
+        'mcp_servers.mcon.bearer_token_env_var="MCON_MCP_TOKEN"',
+        "-c",
+        "mcp_servers.mcon.required=true",
+        "-c",
+        'mcp_servers.mcon.enabled_tools=["run_command_session"]',
         "--cd",
         str(workspace),
         "-",
@@ -64,6 +78,7 @@ def popen_exec_stream(
         "env": {
             "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"),
             "CODEX_HOME": str(runtime_home),
+            "MCON_MCP_TOKEN": mcp_token,
             "MCON_WORKSPACE": str(workspace),
         },
         "stdin": utf8_safe(prompt),

@@ -539,7 +539,7 @@ action = "deny"
 ### chat・プロバイダー実行への適用範囲
 
 `/api/exec`と`/api/chat/stream`は、どちらもmcon executorを通る。
-chatではCodex内蔵shellを個別に差し替えず、Codexプロセス全体をbubblewrap namespace内で起動する。
+chatではCodexプロセス全体をbubblewrap namespace内で起動し、親Codexの内蔵shellは無効化する。
 
 chatのファイルルールはsubjectポリシーから生成した後、`read-only` profileへ縮退する。
 `edit`は`read`へ変換し、`write`専用パスは`deny`としてmaskする。
@@ -554,6 +554,40 @@ Codexは実行中にruntime homeへ書き込むため、元の認証ボリュー
 Codex実体の`packages`は読み取り専用mountし、セッションコピーはプロセス終了時に削除する。
 `auth.json`はCodexが最初のstdoutイベントを返した時点で削除し、
 通常のツール実行が始まる前にファイルとして参照できる時間を閉じる。
+
+親Codexでは`shell_tool`と`unified_exec`を無効化する。コマンド実行はModelConsoleの
+`run_command_session` MCPツールだけを使用する。MCPツール呼び出しごとに、
+親とは異なる子セッションIDを生成し、別の`mcon-executor`プロセスとbubblewrap namespaceを起動する。
+子セッションはcaller agentのcommand、file、network policyを再評価する。
+したがって、親Codexはshellを直接所有せず、コマンドの標準出力と終了状態だけをツール結果として受け取る。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Parent as 親Codex
+    participant MCP as ModelConsole MCP
+    participant Policy as ポリシーサービス
+    participant Child as 子コマンドセッション
+    participant Executor as mcon-executor
+    participant Bwrap as bubblewrap
+
+    Parent->>MCP: run_command_session(argv, cwd, network)
+    MCP->>Policy: caller subjectのcommand policyを評価
+    MCP->>Policy: argv内のfile policyを評価
+    MCP->>Policy: purpose=commandのnetwork policyを評価
+
+    alt いずれかが拒否
+        MCP-->>Parent: 拒否理由
+    else すべて許可
+        MCP->>Child: 子セッションIDを生成
+        Child->>Executor: sandbox specとargvを送信
+        Executor->>Bwrap: 独立namespaceを作成
+        Bwrap-->>Executor: stdout・stderr・終了コード
+        Executor-->>Child: 実行結果
+        Child-->>MCP: session_id付き結果
+        MCP-->>Parent: ツール結果
+    end
+```
 
 残る設計課題は次のとおり。
 
