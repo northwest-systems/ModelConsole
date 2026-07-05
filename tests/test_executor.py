@@ -146,6 +146,26 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_command(spec)
 
+    def test_build_command_rejects_file_rule_outside_workspace(self) -> None:
+        spec = ExecSpec(
+            argv=["/bin/true"],
+            cwd="/workspace",
+            sandbox=SandboxSpec(
+                enabled=True,
+                workspace="/workspace",
+                files=[FileRule("read", "/etc/passwd")],
+            ),
+        )
+
+        with self.assertRaises(ValueError):
+            build_command(spec)
+
+    def test_build_command_rejects_unsupported_network_mode(self) -> None:
+        spec = ExecSpec(argv=["/bin/true"], cwd="/workspace", sandbox=SandboxSpec(enabled=True, workspace="/workspace", network="host"))
+
+        with self.assertRaises(ValueError):
+            build_command(spec)
+
     def test_build_command_does_not_fail_open_when_file_rules_are_empty(self) -> None:
         with tempfile.TemporaryDirectory() as workspace:
             spec = ExecSpec(argv=["/bin/true"], cwd=workspace, sandbox=SandboxSpec(enabled=True, workspace=workspace))
@@ -202,6 +222,36 @@ class ExecutorTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 apply_session_writes(spec)
             self.assertEqual(host_path.read_text(encoding="utf-8"), "host")
+
+    def test_apply_session_writes_rejects_session_output_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace_root, tempfile.TemporaryDirectory() as session_root:
+            workspace = Path(workspace_root)
+            generated_path = workspace / "generated"
+            generated_path.mkdir()
+            spec = _write_spec(workspace, generated_path, Path(session_root), "agent-session")
+            source = Path(session_write_source(session_root, "agent-session", str(workspace), str(generated_path)))
+            source.mkdir(parents=True)
+            (source / "link").symlink_to("/etc/passwd")
+
+            with self.assertRaises(ValueError):
+                apply_session_writes(spec)
+            self.assertFalse((generated_path / "link").exists())
+
+    def test_apply_session_writes_rejects_host_symlink_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace_root, tempfile.TemporaryDirectory() as session_root:
+            workspace = Path(workspace_root)
+            target_dir = workspace / "target"
+            target_dir.mkdir()
+            link_dir = workspace / "generated"
+            link_dir.symlink_to(target_dir, target_is_directory=True)
+            spec = _write_spec(workspace, link_dir, Path(session_root), "agent-session")
+            source = Path(session_write_source(session_root, "agent-session", str(workspace), str(link_dir)))
+            source.mkdir(parents=True)
+            (source / "created.txt").write_text("session", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                apply_session_writes(spec)
+            self.assertFalse((target_dir / "created.txt").exists())
 
     def test_apply_session_writes_allows_last_win_for_managed_host_path(self) -> None:
         with tempfile.TemporaryDirectory() as workspace_root, tempfile.TemporaryDirectory() as session_root:

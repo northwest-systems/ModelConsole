@@ -39,6 +39,28 @@ class RunServiceTests(unittest.TestCase):
             self.assertFalse((synced.agent_workspace / ".ssh").exists())
             self.assertFalse((synced.agent_workspace / "secrets").exists())
 
+    def test_sync_in_excludes_git_metadata_and_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace = root / "real"
+            workspace.mkdir()
+            (workspace / "README.md").write_text("ok\n", encoding="utf-8")
+            (workspace / ".git").mkdir()
+            (workspace / ".git" / "config").write_text("[remote]\n", encoding="utf-8")
+            (workspace / "passwd-link").symlink_to("/etc/passwd")
+            service = RunService(root=root / "runs", default_workspace=workspace)
+            run = service.create_run(
+                subject="mcon.agent.coder",
+                policy_snapshot={"policies": ["workspace"]},
+            )
+
+            synced = service.sync_in(run.run_id)
+
+            self.assertEqual(synced.state, RunState.READY)
+            self.assertTrue((synced.agent_workspace / "README.md").exists())
+            self.assertFalse((synced.agent_workspace / ".git").exists())
+            self.assertFalse((synced.agent_workspace / "passwd-link").exists())
+
     def test_agent_workspace_quarantines_if_secret_detected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -104,6 +126,62 @@ class RunServiceTests(unittest.TestCase):
             self.assertEqual(diff["state"], RunState.QUARANTINED)
             self.assertEqual(diff["patch"], "")
             self.assertIn("secret material detected", diff["quarantine_reason"])
+
+    def test_resolve_cwd_maps_real_workspace_path_to_agent_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace = root / "real"
+            (workspace / "src").mkdir(parents=True)
+            service = RunService(root=root / "runs", default_workspace=workspace)
+            run = service.create_run(
+                subject="mcon.agent.coder",
+                policy_snapshot={"policies": ["workspace"]},
+            )
+            service.sync_in(run.run_id)
+
+            resolved = service.resolve_cwd(run.run_id, str(workspace / "src"))
+
+            self.assertEqual(resolved, run.agent_workspace / "src")
+
+    def test_resolve_cwd_rejects_outside_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace = root / "real"
+            workspace.mkdir()
+            service = RunService(root=root / "runs", default_workspace=workspace)
+            run = service.create_run(
+                subject="mcon.agent.coder",
+                policy_snapshot={"policies": ["workspace"]},
+            )
+            service.sync_in(run.run_id)
+
+            with self.assertRaises(ValueError):
+                service.resolve_cwd(run.run_id, str(root / "outside"))
+
+    def test_resolve_cwd_rejects_non_ready_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace = root / "real"
+            workspace.mkdir()
+            service = RunService(root=root / "runs", default_workspace=workspace)
+            run = service.create_run(
+                subject="mcon.agent.coder",
+                policy_snapshot={"policies": ["workspace"]},
+            )
+
+            with self.assertRaises(ValueError):
+                service.resolve_cwd(run.run_id, None)
+
+    def test_create_run_rejects_missing_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = RunService(root=root / "runs", default_workspace=root / "missing")
+
+            with self.assertRaises(ValueError):
+                service.create_run(
+                    subject="mcon.agent.coder",
+                    policy_snapshot={"policies": ["workspace"]},
+                )
 
 
 if __name__ == "__main__":

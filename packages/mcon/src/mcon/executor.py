@@ -358,6 +358,8 @@ def apply_session_file(
 
 def reject_symlink_parent(root: Path, path: Path) -> None:
     root = Path(os.path.abspath(os.path.normpath(root)))
+    if root.is_symlink():
+        raise ValueError(f"refusing to write below host symlink: {root}")
     parent = path.parent
     try:
         relative = parent.relative_to(root)
