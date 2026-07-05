@@ -1,0 +1,27 @@
+[policy.workspace-readonly]
+description = "Read-only workspace file permissions."
+
+[policy.workspace-readonly.files.workspace-read]
+description = "Read the workspace without write or edit rights."
+action = "read"
+paths = ["/workspace"]
+
+[policy.workspace-readonly.files.secret-deny]
+description = "Hide local secret material."
+action = "deny"
+paths = [
+  "/workspace/.env",
+  "/workspace/.env.local",
+  "/workspace/.env.development",
+  "/workspace/.env.test",
+  "/workspace/.env.production",
+  "/workspace/.npmrc",
+  "/workspace/.pypirc",
+  "/workspace/.netrc",
+  "/workspace/.aws",
+  "/workspace/.gcp",
+  "/workspace/.azure",
+  "/workspace/.ssh",
+  "/workspace/.git-credentials",
+  "/workspace/secrets",
+]

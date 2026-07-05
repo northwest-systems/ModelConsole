@@ -1,0 +1,34 @@
+[policy.git]
+description = "Git command permissions."
+
+[policy.git.credentials.github-token]
+description = "GitHub token for authenticated git operations."
+as = "GITHUB_TOKEN"
+
+[policy.git.commands.git-status]
+description = "Allow git status."
+action = "allow"
+command = "git"
+subcommands = ["status"]
+
+[policy.git.commands.git-diff]
+description = "Allow git diff."
+action = "allow"
+command = "git"
+subcommands = ["diff"]
+
+[policy.git.commands.git-push]
+description = "Ask before git push."
+action = "ask"
+command = "git"
+subcommands = ["push"]
+uses = ["github-token"]
+
+[policy.git.commands.git-push-protected]
+description = "Deny pushes to protected branches."
+action = "deny"
+command = "git"
+subcommands = ["push"]
+
+[policy.git.commands.git-push-protected.semantics]
+target_branches = ["main", "master"]

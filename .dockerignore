@@ -1,0 +1,9 @@
+.cache/
+.git/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+README.md
+FEATURES.md
+PERMISSIONS.md
