@@ -86,9 +86,12 @@ def popen_exec_stream(
     }
     try:
         process = subprocess.Popen(
-            ["mcon-executor"],
+            _executor_command(),
             cwd=workspace,
-            env={"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")},
+            env={
+                "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"),
+                "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+            },
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -109,6 +112,10 @@ def popen_exec_stream(
     except BrokenPipeError:
         pass
     return process
+
+
+def _executor_command() -> list[str]:
+    return [sys.executable, "-m", "mcon.executor"]
 
 
 def _prepare_codex_home() -> Path:

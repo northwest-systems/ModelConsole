@@ -1,12 +1,3 @@
-FROM golang:1.22-bookworm AS executor-test
-WORKDIR /src
-COPY go.mod ./
-COPY cmd ./cmd
-RUN go test ./cmd/mcon-executor
-
-FROM executor-test AS executor-builder
-RUN go build -o /out/mcon-executor ./cmd/mcon-executor
-
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS python-base
 WORKDIR /app
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -35,7 +26,6 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 RUN curl -fsSL https://chatgpt.com/codex/install.sh \
     | CODEX_NON_INTERACTIVE=1 CODEX_INSTALL_DIR=/usr/local/bin sh
-COPY --from=executor-builder /out/mcon-executor /usr/local/bin/mcon-executor
 COPY pyproject.toml ./
 COPY packages ./packages
 COPY configs ./configs

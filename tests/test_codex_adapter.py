@@ -53,7 +53,7 @@ class CodexAdapterTests(unittest.TestCase):
             process._mcon_credential_paths,
             ["/mcon/provider-runtime/codex-test/auth.json"],
         )
-        self.assertEqual(popen.call_args.args[0], ["mcon-executor"])
+        self.assertEqual(popen.call_args.args[0], [sys.executable, "-m", "mcon.executor"])
         spec = json.loads(process.stdin.write.call_args.args[0])
         self.assertEqual(spec["stdin"], "hello")
         self.assertEqual(spec["env"]["CODEX_HOME"], "/mcon/provider-runtime/codex-test")

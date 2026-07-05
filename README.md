@@ -11,7 +11,7 @@ Claude Code / Codex 系 runtime を、policy 管理された sandbox で動か�
 - `write`
 - `edit`
 
-file / network / env の強制は Go executor 側の namespace / mount / netns 実装で行う。command 実行だけ server が argv / semantics を parse して `allow` / `deny` / `ask` を判定する。権限は `mcon.agent.<name>` の subject ごとに解決される。
+file / network / env の強制は Python executor 側の namespace / mount / netns 実装で行う。command 実行だけ server が argv / semantics を parse して `allow` / `deny` / `ask` を判定する。権限は `mcon.agent.<name>` の subject ごとに解決される。
 
 ## Development
 
@@ -19,7 +19,6 @@ Python は container 内外とも必ず `uv` 経由で実行する。
 
 ```sh
 UV_CACHE_DIR="$PWD/.cache/uv" uv run --no-project python -m unittest discover -s tests
-GOCACHE="$PWD/.cache/go-build" go test ./cmd/mcon-executor
 PYTHONPATH=packages/mcon/src UV_CACHE_DIR="$PWD/.cache/uv" uv run --no-project python -m mcon explain mcon.agent.coder -- git push origin main
 ```
 
@@ -33,9 +32,9 @@ Docker では host workspace 全体を container 上の `/workspace` に mount �
 
 ## Docker
 
-配布単位は Docker image とする。image 内には uv、Python control plane、Go executor、bubblewrap、nvm 管理の Node/npm、Codex CLI を含める。
+配布単位は Docker image とする。image 内には uv、Python control plane / executor、bubblewrap、nvm 管理の Node/npm、Codex CLI を含める。
 
-Docker は配布と外側の隔離に使う。実行ごとの file / network 強制は container 内の Go executor が `bubblewrap` で行う。`bubblewrap` は kernel namespace を使うため、Docker Desktop などでは host の native platform で動かす。cross-arch emulation は開発確認用に限定する。
+Docker は配布と外側の隔離に使う。実行ごとの file / network 強制は container 内の Python executor が `bubblewrap` で行う。`bubblewrap` は kernel namespace を使うため、Docker Desktop などでは host の native platform で動かす。cross-arch emulation は開発確認用に限定する。
 
 Node/npm は nvm で pin した最小 runtime として入れる。ModelConsole 自身の `package.json` / `package-lock.json` には runtime に必要な依存だけを記載する。mcon 上で作成するアプリや作業対象の npm 依存は、作業対象側で別途管理する。
 
@@ -107,7 +106,7 @@ stream のファイル mount は agent subject の file policy から生成す�
 
 Codex 認証情報は、実行ごとに `/mcon/provider-runtime` へ必要ファイルだけをコピーする。コピーを Codex runtime home として namespace 内へ mountし、Codexが最初のイベントを返した時点で認証ファイルを削除する。runtime directory自体も実行終了時に削除する。元の`codex-home` volumeはnamespaceへ直接mountしない。
 
-親Codexでは内蔵`shell_tool`、`unified_exec`、`multi_agent`を無効化する。コマンドが必要な場合は、ModelConsoleがHTTP MCPで公開する`run_command_session`を使用する。ツール呼び出しごとに独立した子セッションIDと`mcon-executor`プロセスを作り、caller agentのcommand、file、network policyを再評価する。親Codexが直接shellを実行する経路はない。
+親Codexでは内蔵`shell_tool`、`unified_exec`、`multi_agent`を無効化する。コマンドが必要な場合は、ModelConsoleがHTTP MCPで公開する`run_command_session`を使用する。ツール呼び出しごとに独立した子セッションIDと`python -m mcon.executor`プロセスを作り、caller agentのcommand、file、network policyを再評価する。親Codexが直接shellを実行する経路はない。
 
 TUI commands:
 
@@ -143,7 +142,7 @@ docker stop mcon-smoke
 
 ### Executor Sandbox
 
-Go executor は初期 sandbox spec を受け取れる。`sandbox.enabled=true` の場合、`bubblewrap` で namespace / mount 制限を作る。
+Python executor は初期 sandbox spec を受け取れる。`sandbox.enabled=true` の場合、`bubblewrap` で namespace / mount 制限を作る。
 
 例:
 
@@ -172,4 +171,4 @@ Go executor は初期 sandbox spec を受け取れる。`sandbox.enabled=true` �
 
 `network: "none"` は `--unshare-net` を使う。file rule は `read -> ro-bind-try`, `edit -> bind-try`, `write -> session fs bind + post-run host apply`, `deny -> tmpfs mask` に変換される。server は subject の file policy からこの sandbox spec を生成する。
 
-Server 経由で実行する場合、server は command policy を先に判定し、`allow` された command だけを `mcon-executor` に渡す。executor へ渡す環境変数は request の `env` と最小 `PATH` に限定され、server process の環境変数は実行対象へ継承しない。request の `session_id` は server 側で agent subject と結合されるため、agent 間で writable session fs は共有されない。
+Server 経由で実行する場合、server は command policy を先に判定し、`allow` された command だけを Python executor に渡す。executor へ渡す環境変数は request の `env` と最小 `PATH` に限定され、server process の環境変数は実行対象へ継承しない。request の `session_id` は server 側で agent subject と結合されるため、agent 間で writable session fs は共有されない。

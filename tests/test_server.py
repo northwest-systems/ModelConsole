@@ -16,6 +16,7 @@ from mcon.server.app import (
     _agent_scoped_session_id,
     _chat_id,
     _chat_sandbox,
+    _executor_command,
     _handle_mcp_request,
     _policy_context,
     _prompt_from_messages,
@@ -194,7 +195,7 @@ class ServerTests(unittest.TestCase):
     def test_mcp_command_session_runs_in_separate_executor_process(self) -> None:
         manager = PolicyManager.load(Path("configs/plugins/mcon"))
         completed = subprocess.CompletedProcess(
-            args=["mcon-executor"],
+            args=_executor_command(),
             returncode=0,
             stdout="ok",
             stderr="",
@@ -222,6 +223,7 @@ class ServerTests(unittest.TestCase):
         structured = response["result"]["structuredContent"]
         self.assertTrue(structured["session_id"].startswith("parent--tool-"))
         spec = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(run.call_args.args[0], _executor_command())
         self.assertEqual(spec["sandbox"]["network"], "none")
         self.assertEqual(spec["argv"], ["git", "status"])
 

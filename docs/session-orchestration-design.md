@@ -251,8 +251,8 @@ git diff --no-index /etc/passwd /workspace/README.md
 | 対象 | 現行実装 | 強制場所 | 残っている課題 |
 |---|---|---|---|
 | コマンド権限 | subjectに紐づく`allow`、`deny`、`ask`を解決する | Pythonサーバーの`PolicyManager.explain_command` | `ask`の承認処理は未完成 |
-| ファイル権限 | subjectに紐づく`deny`、`read`、`write`、`edit`を解決する | PythonのポリシーマネージャーとGo実行プログラムのbubblewrap mount | コマンド引数解析は一部コマンドだけ |
-| ネットワーク権限 | subject、mode、purposeに一致するルールを解決する | PythonのポリシーマネージャーとGo実行プログラムのnetwork namespace | 現状は`none`とコンテナネットワーク継承だけで、宛先単位allowlistは未実装 |
+| ファイル権限 | subjectに紐づく`deny`、`read`、`write`、`edit`を解決する | PythonのポリシーマネージャーとPython executorのbubblewrap mount | コマンド引数解析は一部コマンドだけ |
+| ネットワーク権限 | subject、mode、purposeに一致するルールを解決する | PythonのポリシーマネージャーとPython executorのnetwork namespace | 現状は`none`とコンテナネットワーク継承だけで、宛先単位allowlistは未実装 |
 | 認証情報 | コマンドポリシーに利用名を保持する | 現状は説明と解決が中心 | 実行時注入と利用監査を統合する必要がある |
 
 ### subjectとポリシーの解決
@@ -304,7 +304,7 @@ Gitコマンドポリシーを持つ。`auditor`はワークスペースの読�
 ファイル権限は2段階で適用する。
 
 1. Python側で、コマンド引数として明示されたパスを事前判定する。
-2. Go実行プログラム側で、許可されたパスだけをbubblewrapのmountとして公開する。
+2. Python executor側で、許可されたパスだけをbubblewrapのmountとして公開する。
 
 現行のコマンド引数解析は`git diff --no-index`に対応している。
 引数中の相対パスは`cwd`を基準に絶対パスへ変換し、各パスを`read`操作として
@@ -334,7 +334,7 @@ Gitコマンドポリシーを持つ。`auditor`はワークスペースの読�
 }
 ```
 
-Go実行プログラムはルールをパスの短い順にmountする。
+Python executorはルールをパスの短い順にmountする。
 親パスを先に、具体的な子パスを後にmountすることで、子パスの制限を上書き適用する。
 
 | ファイルaction | bubblewrapへの変換 | ホスト側への影響 |
@@ -364,7 +364,7 @@ sequenceDiagram
     participant Client as TUI・APIクライアント
     participant Server as Pythonサーバー
     participant Policy as ポリシーマネージャー
-    participant Executor as Go実行プログラム
+    participant Executor as Python executor
     participant Bwrap as bubblewrap
     participant SessionFS as セッション出力領域
     participant Workspace as ホストワークスペース
@@ -419,7 +419,7 @@ sequenceDiagram
 command用途に一致する許可ルールがないため、executorを起動する前に拒否する。
 `network=none`は通信を無効にする指定なので、明示的な許可ルールがなくても利用できる。
 
-Go実行プログラムが受理する値は次の2つだけである。
+Python executorが受理する値は次の2つだけである。
 
 | network | executorの処理 | 結果 |
 |---|---|---|
@@ -444,7 +444,7 @@ sequenceDiagram
     participant Client as APIクライアント
     participant Server as Pythonサーバー
     participant Policy as ポリシーマネージャー
-    participant Executor as Go実行プログラム
+    participant Executor as Python executor
     participant Bwrap as bubblewrap
     participant Network as コンテナネットワーク
 
@@ -557,7 +557,7 @@ Codex実体の`packages`は読み取り専用mountし、セッションコピー
 
 親Codexでは`shell_tool`と`unified_exec`を無効化する。コマンド実行はModelConsoleの
 `run_command_session` MCPツールだけを使用する。MCPツール呼び出しごとに、
-親とは異なる子セッションIDを生成し、別の`mcon-executor`プロセスとbubblewrap namespaceを起動する。
+親とは異なる子セッションIDを生成し、別の`python -m mcon.executor`プロセスとbubblewrap namespaceを起動する。
 子セッションはcaller agentのcommand、file、network policyを再評価する。
 したがって、親Codexはshellを直接所有せず、コマンドの標準出力と終了状態だけをツール結果として受け取る。
 
@@ -568,7 +568,7 @@ sequenceDiagram
     participant MCP as ModelConsole MCP
     participant Policy as ポリシーサービス
     participant Child as 子コマンドセッション
-    participant Executor as mcon-executor
+    participant Executor as Python executor
     participant Bwrap as bubblewrap
 
     Parent->>MCP: run_command_session(argv, cwd, network)

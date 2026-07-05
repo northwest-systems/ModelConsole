@@ -10,6 +10,7 @@ import secrets
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -163,7 +164,7 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
             }
             try:
                 completed = subprocess.run(
-                    ["mcon-executor"],
+                    _executor_command(),
                     input=json.dumps(spec),
                     text=True,
                     capture_output=True,
@@ -273,7 +274,7 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
             except FileNotFoundError as error:
                 with mcp_contexts_lock:
                     mcp_contexts.pop(mcp_token, None)
-                raise ValueError("mcon-executor command not found in PATH") from error
+                raise ValueError("Python executor command could not be started") from error
             try:
                 self._start_ndjson(200)
                 write_event = lambda event: self._write_ndjson({"chat_id": chat_id, **event})
@@ -526,7 +527,14 @@ def _optional_timeout(payload: dict[str, Any]) -> float:
 
 
 def _executor_environment() -> dict[str, str]:
-    return {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")}
+    return {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"),
+        "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+    }
+
+
+def _executor_command() -> list[str]:
+    return [sys.executable, "-m", "mcon.executor"]
 
 
 def _agent_scoped_session_id(subject: str, session_id: str) -> str:
@@ -704,7 +712,7 @@ def _run_command_session(
     }
     try:
         completed = subprocess.run(
-            ["mcon-executor"],
+            _executor_command(),
             input=json.dumps(spec),
             text=True,
             capture_output=True,
