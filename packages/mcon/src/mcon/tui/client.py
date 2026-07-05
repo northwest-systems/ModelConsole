@@ -476,6 +476,9 @@ def _event_text(event: dict[str, Any]) -> str | None:
     if event.get("type") == "stdout":
         text = event.get("text")
         return text if isinstance(text, str) else None
+    if event.get("type") == "assistant_delta":
+        delta = event.get("delta")
+        return delta if isinstance(delta, str) else None
     if event.get("type") != "codex_event":
         return None
     inner = event.get("event")

@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from typing import Any
 
 from mcon.adapters import codex
+from mcon.adapters.llm_proxy import convert_provider_event
 from mcon.auth import AuthManager, AuthProviderError
 from mcon.policy import PolicyError, PolicyManager
 from mcon.run import RunService, RunState
@@ -289,7 +290,7 @@ def run_server(*, plugin_root: Path, host: str, port: int) -> None:
                         "network": sandbox_spec["network"],
                     }
                 )
-                _stream_process_as_ndjson(process, write_event)
+                _stream_process_as_ndjson(process, write_event, provider=provider)
             finally:
                 with mcp_contexts_lock:
                     mcp_contexts.pop(mcp_token, None)
@@ -749,7 +750,7 @@ def _mcp_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
     }
 
 
-def _stream_process_as_ndjson(process: subprocess.Popen[str], write_event: Any) -> None:
+def _stream_process_as_ndjson(process: subprocess.Popen[str], write_event: Any, *, provider: str = "codex") -> None:
     events: queue.Queue[tuple[str, str | None]] = queue.Queue()
 
     def reader(kind: str, stream: Any) -> None:
@@ -782,7 +783,8 @@ def _stream_process_as_ndjson(process: subprocess.Popen[str], write_event: Any) 
                 except json.JSONDecodeError:
                     write_event({"type": "stdout", "text": line})
                 else:
-                    write_event({"type": "codex_event", "event": decoded})
+                    for event in convert_provider_event(provider, decoded):
+                        write_event(event)
             else:
                 write_event({"type": "stderr", "text": line})
         returncode = process.wait()

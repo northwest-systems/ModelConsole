@@ -31,6 +31,7 @@
 | Run cwd mapping | Commands can map real workspace paths into Agent Workspace. | real workspace cwd maps to agent cwd. | outside cwd and non-ready run rejected. | Covered |
 | HTTP Run API | Public API exposes run creation, sync-in, diff, discard behavior. | create + sync-in + diff works over HTTP. | diff-time secret content returns quarantined response with empty patch. | Covered by opt-in socket integration test plus RunService unit tests |
 | Provider chat | Parent provider is read-only and shell-disabled. | prompt includes policy context and MCP command instruction. | workspace-write rejected, MCP token required, unknown tool rejected. | Covered |
+| LLM proxy | Adapter conversion uses the Claude Code message/content-block contract. | assistant text, tool_use, tool_result, result, partial text delta normalize to internal events. | unknown vendor event is retained as raw only; legacy Codex event cannot bypass policy execution. | Covered |
 | Process lifecycle | Provider process cleanup is deterministic. | runtime credential copy removed after first event. | broken client write terminates process group; surviving children receive SIGKILL. | Covered |
 
 ## Adversarial Review Result

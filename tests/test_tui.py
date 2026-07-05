@@ -26,12 +26,12 @@ class TuiTests(unittest.TestCase):
         self.assertIn("USER: hello", prompt)
         self.assertIn("ASSISTANT: hi", prompt)
 
-    def test_event_text_extracts_codex_delta(self) -> None:
-        text = _event_text({"type": "codex_event", "event": {"type": "agent_message_delta", "delta": "token"}})
+    def test_event_text_extracts_llm_proxy_delta(self) -> None:
+        text = _event_text({"type": "assistant_delta", "provider": "codex", "delta": "token"})
 
         self.assertEqual(text, "token")
 
-    def test_event_text_extracts_codex_exec_completed_agent_message(self) -> None:
+    def test_event_text_extracts_legacy_codex_exec_completed_agent_message(self) -> None:
         text = _event_text(
             {
                 "type": "codex_event",

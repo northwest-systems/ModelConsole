@@ -1,9 +1,0 @@
-{
-  "name": "model-console-runtime",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Minimal Node runtime manifest for ModelConsole container tooling.",
-  "scripts": {},
-  "dependencies": {},
-  "devDependencies": {}
-}

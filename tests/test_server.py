@@ -111,6 +111,32 @@ class ServerTests(unittest.TestCase):
 
         self.assertIsNotNone(process.poll())
 
+    def test_stream_process_converts_provider_json_to_llm_proxy_events(self) -> None:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import json; print(json.dumps({'type': 'agent_message_delta', 'delta': 'x'}), flush=True)",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        events: list[dict[str, object]] = []
+
+        try:
+            _stream_process_as_ndjson(process, events.append, provider="codex")
+        finally:
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+
+        self.assertEqual(events[0]["type"], "llm_event")
+        self.assertIn({"type": "assistant_delta", "provider": "codex", "delta": "x"}, events)
+        self.assertEqual(events[-1], {"type": "exit", "returncode": 0})
+
     def test_terminate_process_group_kills_surviving_children(self) -> None:
         process = unittest.mock.MagicMock()
         process.poll.side_effect = [None, 0, 0]

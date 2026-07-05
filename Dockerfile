@@ -22,8 +22,6 @@ RUN mkdir -p "$NVM_DIR" \
     && nvm alias default "$NODE_VERSION" \
     && node --version \
     && npm --version
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts
 RUN curl -fsSL https://chatgpt.com/codex/install.sh \
     | CODEX_NON_INTERACTIVE=1 CODEX_INSTALL_DIR=/usr/local/bin sh
 COPY pyproject.toml ./

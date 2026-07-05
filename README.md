@@ -32,11 +32,11 @@ Docker では host workspace 全体を container 上の `/workspace` に mount �
 
 ## Docker
 
-配布単位は Docker image とする。image 内には uv、Python control plane / executor、bubblewrap、nvm 管理の Node/npm、Codex CLI を含める。
+配布単位は Docker image とする。image 内には uv、Python control plane / executor、bubblewrap、Codex CLI を含める。現在の image には provider CLI runtime 用に Node/npm も入れるが、ModelConsole 本体の依存ではない。
 
 Docker は配布と外側の隔離に使う。実行ごとの file / network 強制は container 内の Python executor が `bubblewrap` で行う。`bubblewrap` は kernel namespace を使うため、Docker Desktop などでは host の native platform で動かす。cross-arch emulation は開発確認用に限定する。
 
-Node/npm は nvm で pin した最小 runtime として入れる。ModelConsole 自身の `package.json` / `package-lock.json` には runtime に必要な依存だけを記載する。mcon 上で作成するアプリや作業対象の npm 依存は、作業対象側で別途管理する。
+ModelConsole 自身の依存管理は `pyproject.toml` と uv に集約する。`package.json` / `package-lock.json` は持たない。provider CLI が Node/npm を要求する場合でも、それは provider runtime の実装詳細として扱い、mcon 上で作成するアプリや作業対象の npm 依存は作業対象側で別途管理する。
 
 ```sh
 docker build --target test -t modelconsole/mcon:test .
@@ -100,7 +100,7 @@ docker compose exec mcon \
   uv run --no-project python -m mcon tui --server http://127.0.0.1:8765
 ```
 
-通常入力は mcon の orchestration chat stream に送る。TUI は各 user message に `#01234` 形式の chat id を付け、応答待ち中も次の入力を受け付ける。server の `/api/chat/stream` は provider、chat id、解決済みの mcon policy context を使って実行先を決める。現時点の provider は `codex` のみで、Codex プロセス全体を mcon executor の bubblewrap namespace 内で起動し、stdout/stderr を NDJSON として中継する。
+通常入力は mcon の orchestration chat stream に送る。TUI は各 user message に `#01234` 形式の chat id を付け、応答待ち中も次の入力を受け付ける。server の `/api/chat/stream` は provider、chat id、解決済みの mcon policy context を使って実行先を決める。現時点の provider は `codex` のみで、Codex プロセス全体を mcon executor の bubblewrap namespace 内で起動する。provider stdout の JSON は Claude Code の message/content-block 仕様を基準にした LLM proxy で `llm_event` / `assistant_delta` などへ変換してから NDJSON として中継する。
 
 stream のファイル mount は agent subject の file policy から生成する。chat は `read-only` profile で実行するため、`edit` は読み取り専用へ縮退し、`write` 専用 path は mask される。provider API 通信は `purpose=provider` の network policy が `inherit` を許可した subject にだけ与える。通常の `/api/exec` は `purpose=command` なので、request から `network=inherit` を指定しても対応する policy がなければ拒否される。
 
